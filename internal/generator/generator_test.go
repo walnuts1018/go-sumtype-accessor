@@ -768,6 +768,26 @@ func TestSameFieldTypeRejectsDistinctNamedTypesWithSamePackageName(t *testing.T)
 	}
 }
 
+func TestTypeRendererPanicsOnUnsupportedType(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("typeRenderer.code() did not panic for unsupported type")
+		}
+	}()
+
+	typeRenderer{}.code(unsupportedType{})
+}
+
+type unsupportedType struct{}
+
+func (unsupportedType) Underlying() types.Type {
+	return unsupportedType{}
+}
+
+func (unsupportedType) String() string {
+	return "unsupported"
+}
+
 func TestLoadPackageReturnsAllPackageErrors(t *testing.T) {
 	dir := writePackage(t, map[string]string{
 		"go.mod": "module example.com/sample\n\ngo 1.24\n",
