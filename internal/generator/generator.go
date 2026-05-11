@@ -74,13 +74,8 @@ func Generate(cfg Config) error {
 		return errors.New("no sumtype accessor annotations found")
 	}
 
-	var interfaceNames []string
-	for interfaceName := range structsByInterface {
-		interfaceNames = append(interfaceNames, interfaceName)
-	}
-	slices.Sort(interfaceNames)
-
-	var targets []generationTarget
+	interfaceNames := slices.Sorted(maps.Keys(structsByInterface))
+	targets := make([]generationTarget, 0, len(interfaceNames))
 	for _, interfaceName := range interfaceNames {
 		structs := structsByInterface[interfaceName]
 		accessors, err := commonFieldAccessors(interfaceName, structs)
