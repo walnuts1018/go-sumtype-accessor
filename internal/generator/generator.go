@@ -110,11 +110,13 @@ func loadPackage(dir string) (*packages.Package, error) {
 	if len(pkgs) == 0 {
 		return nil, fmt.Errorf("no go files found in %s", dir)
 	}
-	if len(pkgs[0].Errors) > 0 {
-		errs := make([]error, 0, len(pkgs[0].Errors))
-		for _, err := range pkgs[0].Errors {
+	var errs []error
+	packages.Visit(pkgs, nil, func(pkg *packages.Package) {
+		for _, err := range pkg.Errors {
 			errs = append(errs, err)
 		}
+	})
+	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
 	return pkgs[0], nil
@@ -132,17 +134,24 @@ func collectPackageInfo(pkg *packages.Package, structsByInterface map[string][]s
 				if !ok {
 					continue
 				}
-				typ, ok := ts.Type.(*ast.StructType)
-				if !ok {
+				if _, ok := ts.Type.(*ast.StructType); !ok {
 					continue
 				}
 				interfaceName := annotationValue(ts.Doc, gen.Doc)
 				if interfaceName == "" {
 					continue
 				}
+				obj := pkg.TypesInfo.Defs[ts.Name]
+				if obj == nil {
+					continue
+				}
+				stType, ok := obj.Type().Underlying().(*types.Struct)
+				if !ok {
+					continue
+				}
 				structsByInterface[interfaceName] = append(structsByInterface[interfaceName], structInfo{
 					name:   ts.Name.Name,
-					fields: structFields(pkg, typ),
+					fields: structFields(stType),
 				})
 			}
 		}
@@ -154,21 +163,14 @@ func collectPackageInfo(pkg *packages.Package, structsByInterface map[string][]s
 	}
 }
 
-func structFields(pkg *packages.Package, st *ast.StructType) map[string]fieldInfo {
-	fields := make(map[string]fieldInfo, len(st.Fields.List))
-	for _, field := range st.Fields.List {
-		if len(field.Names) != 1 {
+func structFields(st *types.Struct) map[string]fieldInfo {
+	fields := make(map[string]fieldInfo, st.NumFields())
+	for i := range st.NumFields() {
+		field := st.Field(i)
+		if !field.Exported() {
 			continue
 		}
-		name := field.Names[0]
-		if !name.IsExported() {
-			continue
-		}
-		typ := pkg.TypesInfo.TypeOf(field.Type)
-		if typ == nil {
-			continue
-		}
-		fields[name.Name] = fieldInfo{typ: typ}
+		fields[field.Name()] = fieldInfo{typ: field.Type()}
 	}
 	return fields
 }
@@ -242,6 +244,10 @@ func render(packageName, packagePath string, targets []generationTarget) ([]byte
 			for _, accessor := range target.accessors {
 				fieldType := typeRenderer.code(accessor.fieldType)
 				f.Func().Params(jen.Id("v").Op("*").Id(st.name)).Id(accessor.getter).Params().Add(fieldType).Block(
+					jen.If(jen.Id("v").Op("==").Nil()).Block(
+						jen.Var().Id("zero").Add(typeRenderer.code(accessor.fieldType)),
+						jen.Return(jen.Id("zero")),
+					),
 					jen.Return(jen.Id("v").Dot(accessor.fieldName)),
 				)
 				f.Line()
@@ -280,6 +286,8 @@ func (r typeRenderer) code(typ types.Type) jen.Code {
 		return r.chanType(typ)
 	case *types.Map:
 		return jen.Map(r.code(typ.Key())).Add(r.code(typ.Elem()))
+	case *types.Interface:
+		return r.interfaceType(typ)
 	case *types.Named:
 		return r.namedType(typ.Obj(), typ.TypeArgs())
 	case *types.Pointer:
@@ -295,6 +303,31 @@ func (r typeRenderer) code(typ types.Type) jen.Code {
 	default:
 		return jen.Id(types.TypeString(typ, r.qualifier))
 	}
+}
+
+func (r typeRenderer) interfaceType(typ *types.Interface) jen.Code {
+	if typ.Empty() {
+		return jen.Interface()
+	}
+	return jen.InterfaceFunc(func(g *jen.Group) {
+		for i := range typ.NumEmbeddeds() {
+			g.Add(r.code(typ.EmbeddedType(i)))
+		}
+		for i := range typ.NumExplicitMethods() {
+			method := typ.ExplicitMethod(i)
+			sig := method.Type().(*types.Signature)
+			code := jen.Id(method.Name()).Params(r.tupleTypes(sig.Params(), sig.Variadic())...)
+			results := sig.Results()
+			switch results.Len() {
+			case 0:
+			case 1:
+				code.Add(r.code(results.At(0).Type()))
+			default:
+				code.Params(r.tupleTypes(results, false)...)
+			}
+			g.Add(code)
+		}
+	})
 }
 
 func (r typeRenderer) signatureType(sig *types.Signature) jen.Code {
