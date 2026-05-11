@@ -14,20 +14,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"unicode"
 )
 
 const annotationPrefix = "+go-sumtype-accessor="
 
 type Config struct {
 	Dir    string
-	Suffix string
-}
-
-type methodSpec struct {
-	name    string
-	params  []string
-	results []string
+	Output string
 }
 
 type structInfo struct {
@@ -44,7 +37,6 @@ type fieldAccessor struct {
 
 type generationTarget struct {
 	interfaceName string
-	packageName   string
 	marker        string
 	structs       []structInfo
 	accessors     []fieldAccessor
@@ -54,8 +46,8 @@ func Generate(cfg Config) error {
 	if cfg.Dir == "" {
 		cfg.Dir = "."
 	}
-	if cfg.Suffix == "" {
-		cfg.Suffix = "_sumtype.go"
+	if cfg.Output == "" {
+		cfg.Output = "sumtype_accessors.go"
 	}
 
 	fset := token.NewFileSet()
@@ -64,45 +56,38 @@ func Generate(cfg Config) error {
 		return err
 	}
 
-	methodsByInterface := map[string]map[string]methodSpec{}
 	structsByInterface := map[string][]structInfo{}
-	if err := collectPackageInfo(fset, files, methodsByInterface, structsByInterface); err != nil {
-		return err
-	}
+	collectPackageInfo(fset, files, structsByInterface)
 	if len(structsByInterface) == 0 {
 		return errors.New("no sumtype accessor annotations found")
 	}
 
-	for interfaceName, structs := range structsByInterface {
-		methods, ok := methodsByInterface[interfaceName]
-		if !ok {
-			return fmt.Errorf("interface %s not found", interfaceName)
-		}
-		marker, err := markerMethod(methods)
-		if err != nil {
-			return fmt.Errorf("%s: %w", interfaceName, err)
-		}
-		accessors, err := commonFieldAccessors(interfaceName, structs, methods)
+	var interfaceNames []string
+	for interfaceName := range structsByInterface {
+		interfaceNames = append(interfaceNames, interfaceName)
+	}
+	sort.Strings(interfaceNames)
+
+	var targets []generationTarget
+	for _, interfaceName := range interfaceNames {
+		structs := structsByInterface[interfaceName]
+		accessors, err := commonFieldAccessors(interfaceName, structs)
 		if err != nil {
 			return err
 		}
-		content, err := render(generationTarget{
+		targets = append(targets, generationTarget{
 			interfaceName: interfaceName,
-			packageName:   packageName,
-			marker:        marker,
+			marker:        markerMethodName(interfaceName),
 			structs:       structs,
 			accessors:     accessors,
 		})
-		if err != nil {
-			return err
-		}
-
-		filename := strings.ToLower(interfaceName) + cfg.Suffix
-		if err := os.WriteFile(filepath.Join(cfg.Dir, filename), content, 0o644); err != nil {
-			return err
-		}
 	}
-	return nil
+
+	content, err := render(packageName, targets)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(cfg.Dir, cfg.Output), content, 0o644)
 }
 
 func parsePackageFiles(fset *token.FileSet, dir string) (string, []*ast.File, error) {
@@ -140,7 +125,7 @@ func parsePackageFiles(fset *token.FileSet, dir string) (string, []*ast.File, er
 	return packageName, files, nil
 }
 
-func collectPackageInfo(fset *token.FileSet, files []*ast.File, methodsByInterface map[string]map[string]methodSpec, structsByInterface map[string][]structInfo) error {
+func collectPackageInfo(fset *token.FileSet, files []*ast.File, structsByInterface map[string][]structInfo) {
 	for _, file := range files {
 		for _, decl := range file.Decls {
 			gen, ok := decl.(*ast.GenDecl)
@@ -152,19 +137,18 @@ func collectPackageInfo(fset *token.FileSet, files []*ast.File, methodsByInterfa
 				if !ok {
 					continue
 				}
-				switch typ := ts.Type.(type) {
-				case *ast.InterfaceType:
-					methodsByInterface[ts.Name.Name] = methodsFromInterface(typ)
-				case *ast.StructType:
-					interfaceName := annotationValue(ts.Doc, gen.Doc)
-					if interfaceName == "" {
-						continue
-					}
-					structsByInterface[interfaceName] = append(structsByInterface[interfaceName], structInfo{
-						name:   ts.Name.Name,
-						fields: structFields(fset, typ),
-					})
+				typ, ok := ts.Type.(*ast.StructType)
+				if !ok {
+					continue
 				}
+				interfaceName := annotationValue(ts.Doc, gen.Doc)
+				if interfaceName == "" {
+					continue
+				}
+				structsByInterface[interfaceName] = append(structsByInterface[interfaceName], structInfo{
+					name:   ts.Name.Name,
+					fields: structFields(fset, typ),
+				})
 			}
 		}
 	}
@@ -173,27 +157,6 @@ func collectPackageInfo(fset *token.FileSet, files []*ast.File, methodsByInterfa
 			return structsByInterface[interfaceName][i].name < structsByInterface[interfaceName][j].name
 		})
 	}
-	return nil
-}
-
-func methodsFromInterface(iface *ast.InterfaceType) map[string]methodSpec {
-	methods := map[string]methodSpec{}
-	for _, field := range iface.Methods.List {
-		if len(field.Names) != 1 {
-			continue
-		}
-		fn, ok := field.Type.(*ast.FuncType)
-		if !ok {
-			continue
-		}
-		name := field.Names[0].Name
-		methods[name] = methodSpec{
-			name:    name,
-			params:  fieldTypes(fn.Params),
-			results: fieldTypes(fn.Results),
-		}
-	}
-	return methods
 }
 
 func structFields(fset *token.FileSet, st *ast.StructType) map[string]string {
@@ -202,7 +165,11 @@ func structFields(fset *token.FileSet, st *ast.StructType) map[string]string {
 		if len(field.Names) != 1 {
 			continue
 		}
-		fields[field.Names[0].Name] = exprString(fset, field.Type)
+		name := field.Names[0]
+		if !name.IsExported() {
+			continue
+		}
+		fields[name.Name] = exprString(fset, field.Type)
 	}
 	return fields
 }
@@ -222,20 +189,7 @@ func annotationValue(groups ...*ast.CommentGroup) string {
 	return ""
 }
 
-func markerMethod(methods map[string]methodSpec) (string, error) {
-	var markers []string
-	for name, method := range methods {
-		if isUnexported(name) && len(method.params) == 0 && len(method.results) == 0 {
-			markers = append(markers, name)
-		}
-	}
-	if len(markers) != 1 {
-		return "", fmt.Errorf("expected exactly one unexported marker method, found %d", len(markers))
-	}
-	return markers[0], nil
-}
-
-func commonFieldAccessors(interfaceName string, structs []structInfo, methods map[string]methodSpec) ([]fieldAccessor, error) {
+func commonFieldAccessors(interfaceName string, structs []structInfo) ([]fieldAccessor, error) {
 	if len(structs) == 0 {
 		return nil, fmt.Errorf("%s: no annotated structs found", interfaceName)
 	}
@@ -260,67 +214,36 @@ func commonFieldAccessors(interfaceName string, structs []structInfo, methods ma
 	var accessors []fieldAccessor
 	for _, fieldName := range names {
 		fieldType := common[fieldName]
-		accessor := fieldAccessor{fieldName: fieldName, fieldType: fieldType}
-
-		getter := "Get" + fieldName
-		if _, ok := methods[getter]; ok {
-			if err := validateGetter(methods, getter, fieldType); err != nil {
-				return nil, err
-			}
-			accessor.getter = getter
-		}
-
-		setter := "Set" + fieldName
-		if _, ok := methods[setter]; ok {
-			if err := validateSetter(methods, setter, fieldType); err != nil {
-				return nil, err
-			}
-			accessor.setter = setter
-		}
-
-		if accessor.getter != "" || accessor.setter != "" {
-			accessors = append(accessors, accessor)
-		}
+		accessors = append(accessors, fieldAccessor{
+			fieldName: fieldName,
+			fieldType: fieldType,
+			getter:    "Get" + fieldName,
+			setter:    "Set" + fieldName,
+		})
 	}
 	return accessors, nil
 }
 
-func validateGetter(methods map[string]methodSpec, name string, fieldType string) error {
-	method := methods[name]
-	if len(method.params) != 0 || len(method.results) != 1 {
-		return fmt.Errorf("getter method %s must have signature func() %s", name, fieldType)
-	}
-	if method.results[0] != fieldType {
-		return fmt.Errorf("getter method %s returns %s, field type is %s", name, method.results[0], fieldType)
-	}
-	return nil
-}
-
-func validateSetter(methods map[string]methodSpec, name string, fieldType string) error {
-	method := methods[name]
-	if len(method.params) != 1 || len(method.results) != 0 {
-		return fmt.Errorf("setter method %s must have signature func(%s)", name, fieldType)
-	}
-	if method.params[0] != fieldType {
-		return fmt.Errorf("setter method %s accepts %s, field type is %s", name, method.params[0], fieldType)
-	}
-	return nil
-}
-
-func render(target generationTarget) ([]byte, error) {
+func render(packageName string, targets []generationTarget) ([]byte, error) {
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "// Code generated by go-sumtype-accessor; DO NOT EDIT.\n\n")
-	fmt.Fprintf(&b, "package %s\n\n", target.packageName)
+	fmt.Fprintf(&b, "package %s\n\n", packageName)
 
-	for _, st := range target.structs {
-		fmt.Fprintf(&b, "func (*%s) %s() {}\n\n", st.name, target.marker)
+	for _, target := range targets {
+		fmt.Fprintf(&b, "type %s interface {\n", target.interfaceName)
+		fmt.Fprintf(&b, "%s()\n", target.marker)
 		for _, accessor := range target.accessors {
-			if accessor.getter != "" {
+			fmt.Fprintf(&b, "%s() %s\n", accessor.getter, accessor.fieldType)
+			fmt.Fprintf(&b, "%s(%s)\n", accessor.setter, accessor.fieldType)
+		}
+		fmt.Fprint(&b, "}\n\n")
+
+		for _, st := range target.structs {
+			fmt.Fprintf(&b, "func (*%s) %s() {}\n\n", st.name, target.marker)
+			for _, accessor := range target.accessors {
 				fmt.Fprintf(&b, "func (v *%s) %s() %s {\n", st.name, accessor.getter, accessor.fieldType)
 				fmt.Fprintf(&b, "return v.%s\n", accessor.fieldName)
 				fmt.Fprint(&b, "}\n\n")
-			}
-			if accessor.setter != "" {
 				fmt.Fprintf(&b, "func (v *%s) %s(value %s) {\n", st.name, accessor.setter, accessor.fieldType)
 				fmt.Fprintf(&b, "v.%s = value\n", accessor.fieldName)
 				fmt.Fprint(&b, "}\n\n")
@@ -331,35 +254,12 @@ func render(target generationTarget) ([]byte, error) {
 	return format.Source(b.Bytes())
 }
 
-func fieldTypes(fields *ast.FieldList) []string {
-	if fields == nil {
-		return nil
-	}
-	var types []string
-	fset := token.NewFileSet()
-	for _, field := range fields.List {
-		typeName := exprString(fset, field.Type)
-		count := len(field.Names)
-		if count == 0 {
-			count = 1
-		}
-		for range count {
-			types = append(types, typeName)
-		}
-	}
-	return types
-}
-
 func exprString(fset *token.FileSet, expr ast.Expr) string {
 	var b bytes.Buffer
 	_ = printer.Fprint(&b, fset, expr)
 	return b.String()
 }
 
-func isUnexported(name string) bool {
-	if name == "" {
-		return false
-	}
-	r := []rune(name)[0]
-	return !unicode.IsUpper(r)
+func markerMethodName(interfaceName string) string {
+	return "is" + interfaceName
 }

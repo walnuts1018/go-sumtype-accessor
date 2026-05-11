@@ -16,14 +16,7 @@ func TestGenerateAccessorsFromAnnotatedCommonFields(t *testing.T) {
 type SharedID string
 type SharedVersion int64
 type PrivateDetail string
-
-type ExampleState interface {
-	isExampleState()
-	GetID() SharedID
-	SetID(SharedID)
-	GetVersion() SharedVersion
-	SetVersion(SharedVersion)
-}
+type SharedKey string
 
 // +go-sumtype-accessor=ExampleState
 type FirstVariant struct {
@@ -51,19 +44,45 @@ type IgnoredVariant struct {
 	ID      SharedID
 	Version SharedVersion
 }
+
+// +go-sumtype-accessor=AnotherState
+type AlphaVariant struct {
+	Key SharedKey
+}
+
+// +go-sumtype-accessor=AnotherState
+type BetaVariant struct {
+	Key   SharedKey
+	Extra string
+}
 `,
 	})
 
 	err := Generate(Config{
 		Dir:    dir,
-		Suffix: "_sumtype.go",
+		Output: "accessors.gen.go",
 	})
 	if err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
 
-	generated := readFile(t, filepath.Join(dir, "examplestate_sumtype.go"))
+	generated := readFile(t, filepath.Join(dir, "accessors.gen.go"))
 	for _, want := range []string{
+		"type AnotherState interface {",
+		"isAnotherState()",
+		"GetKey() SharedKey",
+		"SetKey(SharedKey)",
+		"func (*AlphaVariant) isAnotherState() {}",
+		"func (v *AlphaVariant) GetKey() SharedKey {",
+		"return v.Key",
+		"func (v *AlphaVariant) SetKey(value SharedKey) {",
+		"v.Key = value",
+		"type ExampleState interface {",
+		"isExampleState()",
+		"GetID() SharedID",
+		"SetID(SharedID)",
+		"GetVersion() SharedVersion",
+		"SetVersion(SharedVersion)",
 		"func (*FirstVariant) isExampleState() {}",
 		"func (v *FirstVariant) GetID() SharedID {",
 		"return v.ID",
@@ -73,6 +92,7 @@ type IgnoredVariant struct {
 		"return v.Version",
 		"func (v *FirstVariant) SetVersion(value SharedVersion) {",
 		"v.Version = value",
+		"func (*BetaVariant) isAnotherState() {}",
 		"func (*SecondVariant) isExampleState() {}",
 		"func (*ThirdVariant) isExampleState() {}",
 	} {
@@ -86,6 +106,12 @@ type IgnoredVariant struct {
 	if strings.Contains(generated, "IgnoredVariant") {
 		t.Fatalf("generated file includes non-annotated type:\n%s", generated)
 	}
+	if _, err := os.Stat(filepath.Join(dir, "examplestate_sumtype.go")); !os.IsNotExist(err) {
+		t.Fatalf("generated per-interface file exists, want only configured output file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "anotherstate_sumtype.go")); !os.IsNotExist(err) {
+		t.Fatalf("generated per-interface file exists, want only configured output file: %v", err)
+	}
 
 	cmd := exec.Command("go", "test", "./...")
 	cmd.Dir = dir
@@ -96,68 +122,12 @@ type IgnoredVariant struct {
 	}
 }
 
-func TestGenerateRejectsGetterTypeMismatch(t *testing.T) {
+func TestGenerateAccessorsWithoutExistingInterface(t *testing.T) {
 	dir := writePackage(t, map[string]string{
 		"go.mod": "module example.com/sample\n\ngo 1.24\n",
 		"state.go": `package sample
 
 type SharedID string
-
-type ExampleState interface {
-	isExampleState()
-	GetID() string
-	SetID(SharedID)
-}
-
-// +go-sumtype-accessor=ExampleState
-type FirstVariant struct {
-	ID SharedID
-}
-`,
-	})
-
-	err := Generate(Config{Dir: dir})
-	if err == nil || !strings.Contains(err.Error(), "getter method GetID returns string, field type is SharedID") {
-		t.Fatalf("Generate() error = %v, want getter type mismatch", err)
-	}
-}
-
-func TestGenerateRejectsSetterTypeMismatch(t *testing.T) {
-	dir := writePackage(t, map[string]string{
-		"go.mod": "module example.com/sample\n\ngo 1.24\n",
-		"state.go": `package sample
-
-type SharedID string
-
-type ExampleState interface {
-	isExampleState()
-	GetID() SharedID
-	SetID(string)
-}
-
-// +go-sumtype-accessor=ExampleState
-type FirstVariant struct {
-	ID SharedID
-}
-`,
-	})
-
-	err := Generate(Config{Dir: dir})
-	if err == nil || !strings.Contains(err.Error(), "setter method SetID accepts string, field type is SharedID") {
-		t.Fatalf("Generate() error = %v, want setter type mismatch", err)
-	}
-}
-
-func TestGenerateIgnoresFieldsWithoutInterfaceAccessors(t *testing.T) {
-	dir := writePackage(t, map[string]string{
-		"go.mod": "module example.com/sample\n\ngo 1.24\n",
-		"state.go": `package sample
-
-type SharedID string
-
-type ExampleState interface {
-	isExampleState()
-}
 
 // +go-sumtype-accessor=ExampleState
 type FirstVariant struct {
@@ -176,9 +146,19 @@ type SecondVariant struct {
 		t.Fatalf("Generate() error = %v", err)
 	}
 
-	generated := readFile(t, filepath.Join(dir, "examplestate_sumtype.go"))
-	if strings.Contains(generated, "GetID") || strings.Contains(generated, "SetID") {
-		t.Fatalf("generated accessors without interface methods:\n%s", generated)
+	generated := readFile(t, filepath.Join(dir, "sumtype_accessors.go"))
+	for _, want := range []string{
+		"type ExampleState interface {",
+		"isExampleState()",
+		"GetID() SharedID",
+		"SetID(SharedID)",
+		"func (*FirstVariant) isExampleState() {}",
+		"func (v *FirstVariant) GetID() SharedID {",
+		"func (v *FirstVariant) SetID(value SharedID) {",
+	} {
+		if !strings.Contains(generated, want) {
+			t.Fatalf("generated file missing %q:\n%s", want, generated)
+		}
 	}
 }
 
@@ -188,12 +168,6 @@ func TestGenerateRejectsMisspelledAnnotation(t *testing.T) {
 		"state.go": `package sample
 
 type SharedID string
-
-type ExampleState interface {
-	isExampleState()
-	GetID() SharedID
-	SetID(SharedID)
-}
 
 // +go-sumtype-accesor=ExampleState
 type FirstVariant struct {
