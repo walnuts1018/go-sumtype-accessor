@@ -208,6 +208,129 @@ type SecondVariant struct {
 	}
 }
 
+func TestGenerateAccessorsForFunctionCommonFieldTypes(t *testing.T) {
+	dir := writePackage(t, map[string]string{
+		"go.mod": "module example.com/sample\n\ngo 1.24\n",
+		"state.go": `package sample
+
+import "time"
+
+// +go-sumtype-accessor=ExampleState
+type FirstVariant struct {
+	Callback func(time.Time) error
+}
+
+// +go-sumtype-accessor=ExampleState
+type SecondVariant struct {
+	Callback func(time.Time) error
+}
+`,
+	})
+
+	err := Generate(Config{Dir: dir})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	generated := readFile(t, filepath.Join(dir, "sumtype_accessors.go"))
+	for _, want := range []string{
+		`import "time"`,
+		"GetCallback() func(time.Time) error",
+		"SetCallback(func(time.Time) error)",
+		"func (v *FirstVariant) GetCallback() func(time.Time) error {",
+		"func (v *FirstVariant) SetCallback(value func(time.Time) error) {",
+	} {
+		if !strings.Contains(generated, want) {
+			t.Fatalf("generated file missing %q:\n%s", want, generated)
+		}
+	}
+
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOCACHE="+filepath.Join(t.TempDir(), "go-build"))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated package does not compile: %v\n%s", err, out)
+	}
+}
+
+func TestGenerateAccessorsForAnonymousStructCommonFieldTypes(t *testing.T) {
+	dir := writePackage(t, map[string]string{
+		"go.mod": "module example.com/sample\n\ngo 1.24\n",
+		"state.go": `package sample
+
+import "time"
+
+// +go-sumtype-accessor=ExampleState
+type FirstVariant struct {
+	Window struct {
+		StartedAt time.Time ` + "`json:\"startedAt\"`" + `
+	}
+}
+
+// +go-sumtype-accessor=ExampleState
+type SecondVariant struct {
+	Window struct {
+		StartedAt time.Time ` + "`json:\"startedAt\"`" + `
+	}
+}
+`,
+	})
+
+	err := Generate(Config{Dir: dir})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	generated := readFile(t, filepath.Join(dir, "sumtype_accessors.go"))
+	for _, want := range []string{
+		`import "time"`,
+		"StartedAt time.Time `json:\"startedAt\"`",
+		"func (v *FirstVariant) GetWindow() struct {",
+		"func (v *FirstVariant) SetWindow(value struct {",
+	} {
+		if !strings.Contains(generated, want) {
+			t.Fatalf("generated file missing %q:\n%s", want, generated)
+		}
+	}
+
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOCACHE="+filepath.Join(t.TempDir(), "go-build"))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated package does not compile: %v\n%s", err, out)
+	}
+}
+
+func TestLoadPackageReturnsAllPackageErrors(t *testing.T) {
+	dir := writePackage(t, map[string]string{
+		"go.mod": "module example.com/sample\n\ngo 1.24\n",
+		"first.go": `package sample
+
+func BrokenOne(
+`,
+		"second.go": `package sample
+
+func BrokenTwo(
+`,
+	})
+
+	_, err := loadPackage(dir)
+	if err == nil {
+		t.Fatal("loadPackage() error = nil, want package errors")
+	}
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok || len(joined.Unwrap()) < 2 {
+		t.Fatalf("loadPackage() error = %T, want joined package errors: %v", err, err)
+	}
+	for _, want := range []string{"first.go", "second.go"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("loadPackage() error missing %q: %v", want, err)
+		}
+	}
+}
+
 func TestGenerateRejectsMisspelledAnnotation(t *testing.T) {
 	dir := writePackage(t, map[string]string{
 		"go.mod": "module example.com/sample\n\ngo 1.24\n",

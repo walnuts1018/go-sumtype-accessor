@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/dave/jennifer/jen"
@@ -108,7 +109,11 @@ func loadPackage(dir string) (*packages.Package, error) {
 		return nil, fmt.Errorf("no go files found in %s", dir)
 	}
 	if len(pkgs[0].Errors) > 0 {
-		return nil, pkgs[0].Errors[0]
+		errs := make([]error, 0, len(pkgs[0].Errors))
+		for _, err := range pkgs[0].Errors {
+			errs = append(errs, err)
+		}
+		return nil, errors.Join(errs...)
 	}
 	return pkgs[0], nil
 }
@@ -148,7 +153,7 @@ func collectPackageInfo(pkg *packages.Package, structsByInterface map[string][]s
 }
 
 func structFields(pkg *packages.Package, st *ast.StructType) map[string]fieldInfo {
-	fields := map[string]fieldInfo{}
+	fields := make(map[string]fieldInfo, len(st.Fields.List))
 	for _, field := range st.Fields.List {
 		if len(field.Names) != 1 {
 			continue
@@ -191,7 +196,7 @@ func commonFieldAccessors(interfaceName string, structs []structInfo) ([]fieldAc
 	for _, st := range structs[1:] {
 		for name, field := range common {
 			otherField, ok := st.fields[name]
-			if !ok || !typesIdentical(field.typ, otherField.typ) {
+			if !ok || !types.Identical(field.typ, otherField.typ) {
 				delete(common, name)
 			}
 		}
@@ -254,10 +259,6 @@ func markerMethodName(interfaceName string) string {
 	return "is" + interfaceName
 }
 
-func typesIdentical(a, b types.Type) bool {
-	return types.Identical(a, b)
-}
-
 type typeRenderer struct {
 	packagePath string
 }
@@ -278,13 +279,73 @@ func (r typeRenderer) code(typ types.Type) jen.Code {
 		return r.namedType(typ.Obj(), typ.TypeArgs())
 	case *types.Pointer:
 		return jen.Op("*").Add(r.code(typ.Elem()))
+	case *types.Signature:
+		return r.signatureType(typ)
 	case *types.Slice:
 		return jen.Index().Add(r.code(typ.Elem()))
+	case *types.Struct:
+		return r.structType(typ)
 	case *types.TypeParam:
 		return jen.Id(typ.Obj().Name())
 	default:
 		return jen.Id(types.TypeString(typ, r.qualifier))
 	}
+}
+
+func (r typeRenderer) signatureType(sig *types.Signature) jen.Code {
+	code := jen.Func().Params(r.tupleTypes(sig.Params(), sig.Variadic())...)
+	results := sig.Results()
+	switch results.Len() {
+	case 0:
+	case 1:
+		code.Add(r.code(results.At(0).Type()))
+	default:
+		code.Params(r.tupleTypes(results, false)...)
+	}
+	return code
+}
+
+func (r typeRenderer) structType(typ *types.Struct) jen.Code {
+	return jen.StructFunc(func(g *jen.Group) {
+		for i := 0; i < typ.NumFields(); i++ {
+			field := typ.Field(i)
+			var code *jen.Statement
+			if field.Embedded() {
+				code = jen.Add(r.code(field.Type()))
+			} else {
+				code = jen.Id(field.Name()).Add(r.code(field.Type()))
+			}
+			if tag := typ.Tag(i); tag != "" {
+				code.Id(structTagLiteral(tag))
+			}
+			g.Add(code)
+		}
+	})
+}
+
+func structTagLiteral(tag string) string {
+	if strconv.CanBackquote(tag) {
+		return "`" + tag + "`"
+	}
+	return strconv.Quote(tag)
+}
+
+func (r typeRenderer) tupleTypes(tup *types.Tuple, variadic bool) []jen.Code {
+	if tup == nil {
+		return nil
+	}
+	codes := make([]jen.Code, 0, tup.Len())
+	for i := 0; i < tup.Len(); i++ {
+		typ := tup.At(i).Type()
+		if variadic && i == tup.Len()-1 {
+			if slice, ok := typ.(*types.Slice); ok {
+				codes = append(codes, jen.Op("...").Add(r.code(slice.Elem())))
+				continue
+			}
+		}
+		codes = append(codes, r.code(typ))
+	}
+	return codes
 }
 
 func (r typeRenderer) namedType(obj *types.TypeName, args *types.TypeList) jen.Code {
