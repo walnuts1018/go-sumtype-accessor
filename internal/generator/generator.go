@@ -5,15 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
-	"go/format"
-	"go/parser"
-	"go/printer"
 	"go/token"
+	"go/types"
 	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
+
+	"github.com/dave/jennifer/jen"
+	"golang.org/x/tools/go/packages"
 )
 
 const annotationPrefix = "+go-sumtype-accessor="
@@ -25,12 +26,16 @@ type Config struct {
 
 type structInfo struct {
 	name   string
-	fields map[string]string
+	fields map[string]fieldInfo
+}
+
+type fieldInfo struct {
+	typ types.Type
 }
 
 type fieldAccessor struct {
 	fieldName string
-	fieldType string
+	fieldType types.Type
 	getter    string
 	setter    string
 }
@@ -50,14 +55,13 @@ func Generate(cfg Config) error {
 		cfg.Output = "sumtype_accessors.go"
 	}
 
-	fset := token.NewFileSet()
-	packageName, files, err := parsePackageFiles(fset, cfg.Dir)
+	pkg, err := loadPackage(cfg.Dir)
 	if err != nil {
 		return err
 	}
 
 	structsByInterface := map[string][]structInfo{}
-	collectPackageInfo(fset, files, structsByInterface)
+	collectPackageInfo(pkg, structsByInterface)
 	if len(structsByInterface) == 0 {
 		return errors.New("no sumtype accessor annotations found")
 	}
@@ -66,7 +70,7 @@ func Generate(cfg Config) error {
 	for interfaceName := range structsByInterface {
 		interfaceNames = append(interfaceNames, interfaceName)
 	}
-	sort.Strings(interfaceNames)
+	slices.Sort(interfaceNames)
 
 	var targets []generationTarget
 	for _, interfaceName := range interfaceNames {
@@ -83,50 +87,34 @@ func Generate(cfg Config) error {
 		})
 	}
 
-	content, err := render(packageName, targets)
+	content, err := render(pkg.Name, pkg.PkgPath, targets)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(cfg.Dir, cfg.Output), content, 0o644)
 }
 
-func parsePackageFiles(fset *token.FileSet, dir string) (string, []*ast.File, error) {
-	entries, err := os.ReadDir(dir)
+func loadPackage(dir string) (*packages.Package, error) {
+	cfg := &packages.Config{
+		Mode:  packages.NeedName | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo,
+		Dir:   dir,
+		Tests: false,
+	}
+	pkgs, err := packages.Load(cfg, ".")
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
-
-	var packageName string
-	var files []*ast.File
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-
-		file, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.ParseComments)
-		if err != nil {
-			return "", nil, err
-		}
-		if packageName == "" {
-			packageName = file.Name.Name
-		}
-		if file.Name.Name != packageName {
-			return "", nil, fmt.Errorf("expected one package in %s, found %s and %s", dir, packageName, file.Name.Name)
-		}
-		files = append(files, file)
+	if len(pkgs) == 0 {
+		return nil, fmt.Errorf("no go files found in %s", dir)
 	}
-	if len(files) == 0 {
-		return "", nil, fmt.Errorf("no go files found in %s", dir)
+	if len(pkgs[0].Errors) > 0 {
+		return nil, pkgs[0].Errors[0]
 	}
-	return packageName, files, nil
+	return pkgs[0], nil
 }
 
-func collectPackageInfo(fset *token.FileSet, files []*ast.File, structsByInterface map[string][]structInfo) {
-	for _, file := range files {
+func collectPackageInfo(pkg *packages.Package, structsByInterface map[string][]structInfo) {
+	for _, file := range pkg.Syntax {
 		for _, decl := range file.Decls {
 			gen, ok := decl.(*ast.GenDecl)
 			if !ok || gen.Tok != token.TYPE {
@@ -147,20 +135,20 @@ func collectPackageInfo(fset *token.FileSet, files []*ast.File, structsByInterfa
 				}
 				structsByInterface[interfaceName] = append(structsByInterface[interfaceName], structInfo{
 					name:   ts.Name.Name,
-					fields: structFields(fset, typ),
+					fields: structFields(pkg, typ),
 				})
 			}
 		}
 	}
 	for interfaceName := range structsByInterface {
-		sort.Slice(structsByInterface[interfaceName], func(i, j int) bool {
-			return structsByInterface[interfaceName][i].name < structsByInterface[interfaceName][j].name
+		slices.SortFunc(structsByInterface[interfaceName], func(a, b structInfo) int {
+			return strings.Compare(a.name, b.name)
 		})
 	}
 }
 
-func structFields(fset *token.FileSet, st *ast.StructType) map[string]string {
-	fields := map[string]string{}
+func structFields(pkg *packages.Package, st *ast.StructType) map[string]fieldInfo {
+	fields := map[string]fieldInfo{}
 	for _, field := range st.Fields.List {
 		if len(field.Names) != 1 {
 			continue
@@ -169,7 +157,11 @@ func structFields(fset *token.FileSet, st *ast.StructType) map[string]string {
 		if !name.IsExported() {
 			continue
 		}
-		fields[name.Name] = exprString(fset, field.Type)
+		typ := pkg.TypesInfo.TypeOf(field.Type)
+		if typ == nil {
+			continue
+		}
+		fields[name.Name] = fieldInfo{typ: typ}
 	}
 	return fields
 }
@@ -194,26 +186,21 @@ func commonFieldAccessors(interfaceName string, structs []structInfo) ([]fieldAc
 		return nil, fmt.Errorf("%s: no annotated structs found", interfaceName)
 	}
 
-	common := map[string]string{}
+	common := map[string]fieldInfo{}
 	maps.Copy(common, structs[0].fields)
 	for _, st := range structs[1:] {
-		for name, typ := range common {
-			otherType, ok := st.fields[name]
-			if !ok || otherType != typ {
+		for name, field := range common {
+			otherField, ok := st.fields[name]
+			if !ok || !typesIdentical(field.typ, otherField.typ) {
 				delete(common, name)
 			}
 		}
 	}
 
-	var names []string
-	for name := range common {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	var accessors []fieldAccessor
+	names := slices.Sorted(maps.Keys(common))
+	accessors := make([]fieldAccessor, 0, len(names))
 	for _, fieldName := range names {
-		fieldType := common[fieldName]
+		fieldType := common[fieldName].typ
 		accessors = append(accessors, fieldAccessor{
 			fieldName: fieldName,
 			fieldType: fieldType,
@@ -224,42 +211,115 @@ func commonFieldAccessors(interfaceName string, structs []structInfo) ([]fieldAc
 	return accessors, nil
 }
 
-func render(packageName string, targets []generationTarget) ([]byte, error) {
-	var b bytes.Buffer
-	fmt.Fprintf(&b, "// Code generated by go-sumtype-accessor; DO NOT EDIT.\n\n")
-	fmt.Fprintf(&b, "package %s\n\n", packageName)
+func render(packageName, packagePath string, targets []generationTarget) ([]byte, error) {
+	f := jen.NewFile(packageName)
+	f.HeaderComment("Code generated by go-sumtype-accessor; DO NOT EDIT.")
 
+	typeRenderer := typeRenderer{packagePath: packagePath}
 	for _, target := range targets {
-		fmt.Fprintf(&b, "type %s interface {\n", target.interfaceName)
-		fmt.Fprintf(&b, "%s()\n", target.marker)
-		for _, accessor := range target.accessors {
-			fmt.Fprintf(&b, "%s() %s\n", accessor.getter, accessor.fieldType)
-			fmt.Fprintf(&b, "%s(%s)\n", accessor.setter, accessor.fieldType)
-		}
-		fmt.Fprint(&b, "}\n\n")
+		f.Type().Id(target.interfaceName).InterfaceFunc(func(g *jen.Group) {
+			g.Id(target.marker).Params()
+			for _, accessor := range target.accessors {
+				g.Id(accessor.getter).Params().Add(typeRenderer.code(accessor.fieldType))
+				g.Id(accessor.setter).Params(typeRenderer.code(accessor.fieldType))
+			}
+		})
+		f.Line()
 
 		for _, st := range target.structs {
-			fmt.Fprintf(&b, "func (*%s) %s() {}\n\n", st.name, target.marker)
+			f.Func().Params(jen.Op("*").Id(st.name)).Id(target.marker).Params().Block()
+			f.Line()
 			for _, accessor := range target.accessors {
-				fmt.Fprintf(&b, "func (v *%s) %s() %s {\n", st.name, accessor.getter, accessor.fieldType)
-				fmt.Fprintf(&b, "return v.%s\n", accessor.fieldName)
-				fmt.Fprint(&b, "}\n\n")
-				fmt.Fprintf(&b, "func (v *%s) %s(value %s) {\n", st.name, accessor.setter, accessor.fieldType)
-				fmt.Fprintf(&b, "v.%s = value\n", accessor.fieldName)
-				fmt.Fprint(&b, "}\n\n")
+				fieldType := typeRenderer.code(accessor.fieldType)
+				f.Func().Params(jen.Id("v").Op("*").Id(st.name)).Id(accessor.getter).Params().Add(fieldType).Block(
+					jen.Return(jen.Id("v").Dot(accessor.fieldName)),
+				)
+				f.Line()
+				f.Func().Params(jen.Id("v").Op("*").Id(st.name)).Id(accessor.setter).Params(jen.Id("value").Add(fieldType)).Block(
+					jen.Id("v").Dot(accessor.fieldName).Op("=").Id("value"),
+				)
+				f.Line()
 			}
 		}
 	}
 
-	return format.Source(b.Bytes())
-}
-
-func exprString(fset *token.FileSet, expr ast.Expr) string {
 	var b bytes.Buffer
-	_ = printer.Fprint(&b, fset, expr)
-	return b.String()
+	if err := f.Render(&b); err != nil {
+		return nil, err
+	}
+	return b.Bytes(), nil
 }
 
 func markerMethodName(interfaceName string) string {
 	return "is" + interfaceName
+}
+
+func typesIdentical(a, b types.Type) bool {
+	return types.Identical(a, b)
+}
+
+type typeRenderer struct {
+	packagePath string
+}
+
+func (r typeRenderer) code(typ types.Type) jen.Code {
+	switch typ := typ.(type) {
+	case *types.Alias:
+		return r.namedType(typ.Obj(), typ.TypeArgs())
+	case *types.Array:
+		return jen.Index(jen.Lit(typ.Len())).Add(r.code(typ.Elem()))
+	case *types.Basic:
+		return jen.Id(typ.Name())
+	case *types.Chan:
+		return r.chanType(typ)
+	case *types.Map:
+		return jen.Map(r.code(typ.Key())).Add(r.code(typ.Elem()))
+	case *types.Named:
+		return r.namedType(typ.Obj(), typ.TypeArgs())
+	case *types.Pointer:
+		return jen.Op("*").Add(r.code(typ.Elem()))
+	case *types.Slice:
+		return jen.Index().Add(r.code(typ.Elem()))
+	case *types.TypeParam:
+		return jen.Id(typ.Obj().Name())
+	default:
+		return jen.Id(types.TypeString(typ, r.qualifier))
+	}
+}
+
+func (r typeRenderer) namedType(obj *types.TypeName, args *types.TypeList) jen.Code {
+	var code *jen.Statement
+	if pkg := obj.Pkg(); pkg != nil && pkg.Path() != r.packagePath {
+		code = jen.Qual(pkg.Path(), obj.Name())
+	} else {
+		code = jen.Id(obj.Name())
+	}
+	if args.Len() == 0 {
+		return code
+	}
+	typeArgs := make([]jen.Code, 0, args.Len())
+	for arg := range args.Types() {
+		typeArgs = append(typeArgs, r.code(arg))
+	}
+	return code.Types(typeArgs...)
+}
+
+func (r typeRenderer) chanType(typ *types.Chan) jen.Code {
+	switch typ.Dir() {
+	case types.SendRecv:
+		return jen.Chan().Add(r.code(typ.Elem()))
+	case types.SendOnly:
+		return jen.Chan().Op("<-").Add(r.code(typ.Elem()))
+	case types.RecvOnly:
+		return jen.Op("<-").Chan().Add(r.code(typ.Elem()))
+	default:
+		return jen.Chan().Add(r.code(typ.Elem()))
+	}
+}
+
+func (r typeRenderer) qualifier(pkg *types.Package) string {
+	if pkg.Path() == r.packagePath {
+		return ""
+	}
+	return pkg.Name()
 }

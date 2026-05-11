@@ -162,6 +162,52 @@ type SecondVariant struct {
 	}
 }
 
+func TestGenerateAccessorsForImportedCommonFieldTypes(t *testing.T) {
+	dir := writePackage(t, map[string]string{
+		"go.mod": "module example.com/sample\n\ngo 1.24\n",
+		"state.go": `package sample
+
+import "time"
+
+// +go-sumtype-accessor=ExampleState
+type FirstVariant struct {
+	StartedAt time.Time
+}
+
+// +go-sumtype-accessor=ExampleState
+type SecondVariant struct {
+	StartedAt time.Time
+}
+`,
+	})
+
+	err := Generate(Config{Dir: dir})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	generated := readFile(t, filepath.Join(dir, "sumtype_accessors.go"))
+	for _, want := range []string{
+		`import "time"`,
+		"GetStartedAt() time.Time",
+		"SetStartedAt(time.Time)",
+		"func (v *FirstVariant) GetStartedAt() time.Time {",
+		"func (v *FirstVariant) SetStartedAt(value time.Time) {",
+	} {
+		if !strings.Contains(generated, want) {
+			t.Fatalf("generated file missing %q:\n%s", want, generated)
+		}
+	}
+
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOCACHE="+filepath.Join(t.TempDir(), "go-build"))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated package does not compile: %v\n%s", err, out)
+	}
+}
+
 func TestGenerateRejectsMisspelledAnnotation(t *testing.T) {
 	dir := writePackage(t, map[string]string{
 		"go.mod": "module example.com/sample\n\ngo 1.24\n",
