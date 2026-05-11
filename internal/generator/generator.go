@@ -111,19 +111,13 @@ func loadPackage(dir string) (*packages.Package, error) {
 	if len(pkgs) == 0 {
 		return nil, fmt.Errorf("no go files found in %s", dir)
 	}
-	var errCount int
+	var errs []error
 	packages.Visit(pkgs, nil, func(pkg *packages.Package) {
-		errCount += len(pkg.Errors)
+		for _, err := range pkg.Errors {
+			errs = append(errs, err)
+		}
 	})
-	if errCount > 0 {
-		errs := make([]error, errCount)
-		i := 0
-		packages.Visit(pkgs, nil, func(pkg *packages.Package) {
-			for _, err := range pkg.Errors {
-				errs[i] = err
-				i++
-			}
-		})
+	if len(errs) > 0 {
 		return nil, errors.Join(errs...)
 	}
 	return pkgs[0], nil
@@ -206,10 +200,16 @@ func annotationValue(groups ...*ast.CommentGroup) string {
 		if group == nil {
 			continue
 		}
-		for line := range strings.SplitSeq(group.Text(), "\n") {
-			line = strings.TrimSpace(line)
-			if value, ok := strings.CutPrefix(line, annotationPrefix); ok {
-				return strings.TrimSpace(value)
+		for _, comment := range group.List {
+			text := strings.TrimSpace(comment.Text)
+			text = strings.TrimPrefix(text, "//")
+			text = strings.TrimPrefix(text, "/*")
+			text = strings.TrimSuffix(text, "*/")
+			for line := range strings.SplitSeq(text, "\n") {
+				line = strings.TrimSpace(line)
+				if value, ok := strings.CutPrefix(line, annotationPrefix); ok {
+					return strings.TrimSpace(value)
+				}
 			}
 		}
 	}
@@ -266,10 +266,158 @@ func sameTypeParams(a, b []typeParamInfo) bool {
 }
 
 func sameFieldType(a, b types.Type) bool {
+	return sameFieldTypeSeen(a, b, map[typePair]bool{})
+}
+
+type typePair struct {
+	a types.Type
+	b types.Type
+}
+
+func sameFieldTypeSeen(a, b types.Type, seen map[typePair]bool) bool {
 	if types.Identical(a, b) {
 		return true
 	}
-	return types.TypeString(a, nil) == types.TypeString(b, nil)
+	pair := typePair{a: a, b: b}
+	if seen[pair] {
+		return true
+	}
+	seen[pair] = true
+
+	switch a := a.(type) {
+	case *types.Alias:
+		b, ok := b.(*types.Alias)
+		return ok && sameTypeName(a.Obj(), b.Obj()) && sameTypeList(a.TypeArgs(), b.TypeArgs(), seen)
+	case *types.Array:
+		b, ok := b.(*types.Array)
+		return ok && a.Len() == b.Len() && sameFieldTypeSeen(a.Elem(), b.Elem(), seen)
+	case *types.Basic:
+		b, ok := b.(*types.Basic)
+		return ok && a.Kind() == b.Kind()
+	case *types.Chan:
+		b, ok := b.(*types.Chan)
+		return ok && a.Dir() == b.Dir() && sameFieldTypeSeen(a.Elem(), b.Elem(), seen)
+	case *types.Map:
+		b, ok := b.(*types.Map)
+		return ok && sameFieldTypeSeen(a.Key(), b.Key(), seen) && sameFieldTypeSeen(a.Elem(), b.Elem(), seen)
+	case *types.Interface:
+		b, ok := b.(*types.Interface)
+		return ok && sameInterfaceType(a, b, seen)
+	case *types.Named:
+		b, ok := b.(*types.Named)
+		return ok && sameTypeName(a.Obj(), b.Obj()) && sameTypeList(a.TypeArgs(), b.TypeArgs(), seen)
+	case *types.Pointer:
+		b, ok := b.(*types.Pointer)
+		return ok && sameFieldTypeSeen(a.Elem(), b.Elem(), seen)
+	case *types.Signature:
+		b, ok := b.(*types.Signature)
+		return ok && sameSignatureType(a, b, seen)
+	case *types.Slice:
+		b, ok := b.(*types.Slice)
+		return ok && sameFieldTypeSeen(a.Elem(), b.Elem(), seen)
+	case *types.Struct:
+		b, ok := b.(*types.Struct)
+		return ok && sameStructType(a, b, seen)
+	case *types.TypeParam:
+		b, ok := b.(*types.TypeParam)
+		return ok && a.Obj().Name() == b.Obj().Name()
+	default:
+		return false
+	}
+}
+
+func sameTypeName(a, b *types.TypeName) bool {
+	if a.Name() != b.Name() {
+		return false
+	}
+	aPkg := a.Pkg()
+	bPkg := b.Pkg()
+	if aPkg == nil || bPkg == nil {
+		return aPkg == bPkg
+	}
+	return aPkg.Path() == bPkg.Path()
+}
+
+func sameTypeList(a, b *types.TypeList, seen map[typePair]bool) bool {
+	aLen := 0
+	if a != nil {
+		aLen = a.Len()
+	}
+	bLen := 0
+	if b != nil {
+		bLen = b.Len()
+	}
+	if aLen != bLen {
+		return false
+	}
+	for i := range aLen {
+		if !sameFieldTypeSeen(a.At(i), b.At(i), seen) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameInterfaceType(a, b *types.Interface, seen map[typePair]bool) bool {
+	if a.NumEmbeddeds() != b.NumEmbeddeds() || a.NumExplicitMethods() != b.NumExplicitMethods() {
+		return false
+	}
+	for i := range a.NumEmbeddeds() {
+		if !sameFieldTypeSeen(a.EmbeddedType(i), b.EmbeddedType(i), seen) {
+			return false
+		}
+	}
+	for i := range a.NumExplicitMethods() {
+		aMethod := a.ExplicitMethod(i)
+		bMethod := b.ExplicitMethod(i)
+		if aMethod.Name() != bMethod.Name() || !sameSignatureType(aMethod.Type().(*types.Signature), bMethod.Type().(*types.Signature), seen) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameSignatureType(a, b *types.Signature, seen map[typePair]bool) bool {
+	return a.Variadic() == b.Variadic() &&
+		sameTupleType(a.Params(), b.Params(), seen) &&
+		sameTupleType(a.Results(), b.Results(), seen)
+}
+
+func sameTupleType(a, b *types.Tuple, seen map[typePair]bool) bool {
+	aLen := 0
+	if a != nil {
+		aLen = a.Len()
+	}
+	bLen := 0
+	if b != nil {
+		bLen = b.Len()
+	}
+	if aLen != bLen {
+		return false
+	}
+	for i := range aLen {
+		if !sameFieldTypeSeen(a.At(i).Type(), b.At(i).Type(), seen) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameStructType(a, b *types.Struct, seen map[typePair]bool) bool {
+	if a.NumFields() != b.NumFields() {
+		return false
+	}
+	for i := range a.NumFields() {
+		aField := a.Field(i)
+		bField := b.Field(i)
+		if aField.Name() != bField.Name() ||
+			aField.Embedded() != bField.Embedded() ||
+			a.Tag(i) != b.Tag(i) ||
+			!sameFieldTypeSeen(aField.Type(), bField.Type(), seen) {
+			return false
+		}
+	}
+	return true
 }
 
 func render(packageName, packagePath string, targets []generationTarget) ([]byte, error) {
@@ -297,10 +445,6 @@ func render(packageName, packagePath string, targets []generationTarget) ([]byte
 			for _, accessor := range target.accessors {
 				fieldType := typeRenderer.code(accessor.fieldType)
 				f.Func().Params(jen.Id("v").Add(typeRenderer.receiverType(st))).Id(accessor.getter).Params().Add(fieldType).Block(
-					jen.If(jen.Id("v").Op("==").Nil()).Block(
-						jen.Var().Id("zero").Add(typeRenderer.code(accessor.fieldType)),
-						jen.Return(jen.Id("zero")),
-					),
 					jen.Return(jen.Id("v").Dot(accessor.fieldName)),
 				)
 				f.Line()
@@ -430,7 +574,7 @@ func (r typeRenderer) structType(typ *types.Struct) jen.Code {
 				code = jen.Id(field.Name()).Add(r.code(field.Type()))
 			}
 			if tag := typ.Tag(i); tag != "" {
-				code.Id(structTagLiteral(tag))
+				code.Add(jen.Op(structTagLiteral(tag)))
 			}
 			g.Add(code)
 		}

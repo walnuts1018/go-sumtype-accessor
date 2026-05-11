@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"go/types"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -85,10 +86,6 @@ type AnotherState interface {
 func (*AlphaVariant) isAnotherState() {}
 
 func (v *AlphaVariant) GetKey() SharedKey {
-	if v == nil {
-		var zero SharedKey
-		return zero
-	}
 	return v.Key
 }
 
@@ -99,10 +96,6 @@ func (v *AlphaVariant) SetKey(value SharedKey) {
 func (*BetaVariant) isAnotherState() {}
 
 func (v *BetaVariant) GetKey() SharedKey {
-	if v == nil {
-		var zero SharedKey
-		return zero
-	}
 	return v.Key
 }
 
@@ -121,10 +114,6 @@ type ExampleState interface {
 func (*FirstVariant) isExampleState() {}
 
 func (v *FirstVariant) GetID() SharedID {
-	if v == nil {
-		var zero SharedID
-		return zero
-	}
 	return v.ID
 }
 
@@ -133,10 +122,6 @@ func (v *FirstVariant) SetID(value SharedID) {
 }
 
 func (v *FirstVariant) GetVersion() SharedVersion {
-	if v == nil {
-		var zero SharedVersion
-		return zero
-	}
 	return v.Version
 }
 
@@ -147,10 +132,6 @@ func (v *FirstVariant) SetVersion(value SharedVersion) {
 func (*SecondVariant) isExampleState() {}
 
 func (v *SecondVariant) GetID() SharedID {
-	if v == nil {
-		var zero SharedID
-		return zero
-	}
 	return v.ID
 }
 
@@ -159,10 +140,6 @@ func (v *SecondVariant) SetID(value SharedID) {
 }
 
 func (v *SecondVariant) GetVersion() SharedVersion {
-	if v == nil {
-		var zero SharedVersion
-		return zero
-	}
 	return v.Version
 }
 
@@ -173,10 +150,6 @@ func (v *SecondVariant) SetVersion(value SharedVersion) {
 func (*ThirdVariant) isExampleState() {}
 
 func (v *ThirdVariant) GetID() SharedID {
-	if v == nil {
-		var zero SharedID
-		return zero
-	}
 	return v.ID
 }
 
@@ -185,10 +158,6 @@ func (v *ThirdVariant) SetID(value SharedID) {
 }
 
 func (v *ThirdVariant) GetVersion() SharedVersion {
-	if v == nil {
-		var zero SharedVersion
-		return zero
-	}
 	return v.Version
 }
 
@@ -232,10 +201,6 @@ type ExampleState interface {
 func (*FirstVariant) isExampleState() {}
 
 func (v *FirstVariant) GetID() SharedID {
-	if v == nil {
-		var zero SharedID
-		return zero
-	}
 	return v.ID
 }
 
@@ -246,10 +211,6 @@ func (v *FirstVariant) SetID(value SharedID) {
 func (*SecondVariant) isExampleState() {}
 
 func (v *SecondVariant) GetID() SharedID {
-	if v == nil {
-		var zero SharedID
-		return zero
-	}
 	return v.ID
 }
 
@@ -293,10 +254,6 @@ type ExampleState interface {
 func (*FirstVariant) isExampleState() {}
 
 func (v *FirstVariant) GetStartedAt() time.Time {
-	if v == nil {
-		var zero time.Time
-		return zero
-	}
 	return v.StartedAt
 }
 
@@ -307,10 +264,6 @@ func (v *FirstVariant) SetStartedAt(value time.Time) {
 func (*SecondVariant) isExampleState() {}
 
 func (v *SecondVariant) GetStartedAt() time.Time {
-	if v == nil {
-		var zero time.Time
-		return zero
-	}
 	return v.StartedAt
 }
 
@@ -355,10 +308,6 @@ type ExampleState interface {
 func (*FirstVariant) isExampleState() {}
 
 func (v *FirstVariant) GetCallback() func(time.Time) error {
-	if v == nil {
-		var zero func(time.Time) error
-		return zero
-	}
 	return v.Callback
 }
 
@@ -369,10 +318,6 @@ func (v *FirstVariant) SetCallback(value func(time.Time) error) {
 func (*SecondVariant) isExampleState() {}
 
 func (v *SecondVariant) GetCallback() func(time.Time) error {
-	if v == nil {
-		var zero func(time.Time) error
-		return zero
-	}
 	return v.Callback
 }
 
@@ -422,12 +367,6 @@ type SecondVariant struct {
 				"func (v *FirstVariant) GetWindow() struct {\n" +
 				"\tStartedAt time.Time `json:\"startedAt\"`\n" +
 				"} {\n" +
-				"\tif v == nil {\n" +
-				"\t\tvar zero struct {\n" +
-				"\t\t\tStartedAt time.Time `json:\"startedAt\"`\n" +
-				"\t\t}\n" +
-				"\t\treturn zero\n" +
-				"\t}\n" +
 				"\treturn v.Window\n" +
 				"}\n\n" +
 				"func (v *FirstVariant) SetWindow(value struct {\n" +
@@ -439,12 +378,6 @@ type SecondVariant struct {
 				"func (v *SecondVariant) GetWindow() struct {\n" +
 				"\tStartedAt time.Time `json:\"startedAt\"`\n" +
 				"} {\n" +
-				"\tif v == nil {\n" +
-				"\t\tvar zero struct {\n" +
-				"\t\t\tStartedAt time.Time `json:\"startedAt\"`\n" +
-				"\t\t}\n" +
-				"\t\treturn zero\n" +
-				"\t}\n" +
 				"\treturn v.Window\n" +
 				"}\n\n" +
 				"func (v *SecondVariant) SetWindow(value struct {\n" +
@@ -495,10 +428,6 @@ type ExampleState interface {
 func (*FirstVariant) isExampleState() {}
 
 func (v *FirstVariant) GetEmbedded() Embedded {
-	if v == nil {
-		var zero Embedded
-		return zero
-	}
 	return v.Embedded
 }
 
@@ -507,10 +436,6 @@ func (v *FirstVariant) SetEmbedded(value Embedded) {
 }
 
 func (v *FirstVariant) GetPrimary() string {
-	if v == nil {
-		var zero string
-		return zero
-	}
 	return v.Primary
 }
 
@@ -519,10 +444,6 @@ func (v *FirstVariant) SetPrimary(value string) {
 }
 
 func (v *FirstVariant) GetSecondary() string {
-	if v == nil {
-		var zero string
-		return zero
-	}
 	return v.Secondary
 }
 
@@ -533,10 +454,6 @@ func (v *FirstVariant) SetSecondary(value string) {
 func (*SecondVariant) isExampleState() {}
 
 func (v *SecondVariant) GetEmbedded() Embedded {
-	if v == nil {
-		var zero Embedded
-		return zero
-	}
 	return v.Embedded
 }
 
@@ -545,10 +462,6 @@ func (v *SecondVariant) SetEmbedded(value Embedded) {
 }
 
 func (v *SecondVariant) GetPrimary() string {
-	if v == nil {
-		var zero string
-		return zero
-	}
 	return v.Primary
 }
 
@@ -557,10 +470,6 @@ func (v *SecondVariant) SetPrimary(value string) {
 }
 
 func (v *SecondVariant) GetSecondary() string {
-	if v == nil {
-		var zero string
-		return zero
-	}
 	return v.Secondary
 }
 
@@ -601,10 +510,6 @@ type ExampleState[T any] interface {
 func (*FirstVariant[T]) isExampleState() {}
 
 func (v *FirstVariant[T]) GetValue() T {
-	if v == nil {
-		var zero T
-		return zero
-	}
 	return v.Value
 }
 
@@ -615,15 +520,81 @@ func (v *FirstVariant[T]) SetValue(value T) {
 func (*SecondVariant[T]) isExampleState() {}
 
 func (v *SecondVariant[T]) GetValue() T {
-	if v == nil {
-		var zero T
-		return zero
-	}
 	return v.Value
 }
 
 func (v *SecondVariant[T]) SetValue(value T) {
 	v.Value = value
+}
+`,
+			checkCompiles: true,
+		},
+		{
+			name: "generic composite common field types",
+			files: map[string]string{
+				"go.mod": "module example.com/sample\n\ngo 1.24\n",
+				"state.go": `package sample
+
+// +go-sumtype-accessor=ExampleState
+type FirstVariant[T any] struct {
+	Items  []T
+	Lookup map[string]T
+}
+
+// +go-sumtype-accessor=ExampleState
+type SecondVariant[T any] struct {
+	Items  []T
+	Lookup map[string]T
+}
+`,
+			},
+			output: "sumtype_accessors.go",
+			want: `// Code generated by go-sumtype-accessor; DO NOT EDIT.
+
+package sample
+
+type ExampleState[T any] interface {
+	isExampleState()
+	GetItems() []T
+	SetItems([]T)
+	GetLookup() map[string]T
+	SetLookup(map[string]T)
+}
+
+func (*FirstVariant[T]) isExampleState() {}
+
+func (v *FirstVariant[T]) GetItems() []T {
+	return v.Items
+}
+
+func (v *FirstVariant[T]) SetItems(value []T) {
+	v.Items = value
+}
+
+func (v *FirstVariant[T]) GetLookup() map[string]T {
+	return v.Lookup
+}
+
+func (v *FirstVariant[T]) SetLookup(value map[string]T) {
+	v.Lookup = value
+}
+
+func (*SecondVariant[T]) isExampleState() {}
+
+func (v *SecondVariant[T]) GetItems() []T {
+	return v.Items
+}
+
+func (v *SecondVariant[T]) SetItems(value []T) {
+	v.Items = value
+}
+
+func (v *SecondVariant[T]) GetLookup() map[string]T {
+	return v.Lookup
+}
+
+func (v *SecondVariant[T]) SetLookup(value map[string]T) {
+	v.Lookup = value
 }
 `,
 			checkCompiles: true,
@@ -665,10 +636,6 @@ type ExampleState interface {
 func (*FirstVariant) isExampleState() {}
 
 func (v *FirstVariant) GetID() SharedID {
-	if v == nil {
-		var zero SharedID
-		return zero
-	}
 	return v.ID
 }
 
@@ -679,10 +646,6 @@ func (v *FirstVariant) SetID(value SharedID) {
 func (*SecondVariant) isExampleState() {}
 
 func (v *SecondVariant) GetID() SharedID {
-	if v == nil {
-		var zero SharedID
-		return zero
-	}
 	return v.ID
 }
 
@@ -737,12 +700,6 @@ func (*FirstVariant) isExampleState() {}
 func (v *FirstVariant) GetHandler() interface {
 	Handle(time.Time) error
 } {
-	if v == nil {
-		var zero interface {
-			Handle(time.Time) error
-		}
-		return zero
-	}
 	return v.Handler
 }
 
@@ -757,12 +714,6 @@ func (*SecondVariant) isExampleState() {}
 func (v *SecondVariant) GetHandler() interface {
 	Handle(time.Time) error
 } {
-	if v == nil {
-		var zero interface {
-			Handle(time.Time) error
-		}
-		return zero
-	}
 	return v.Handler
 }
 
@@ -785,7 +736,7 @@ func (v *SecondVariant) SetHandler(value interface {
 			}
 
 			if err := Generate(tt.config); err != nil {
-				t.Fatalf("Generate() error = %v", err)
+				t.Fatalf("Generate() = %v", err)
 			}
 
 			got := readFile(t, filepath.Join(dir, tt.output))
@@ -806,6 +757,17 @@ func (v *SecondVariant) SetHandler(value interface {
 	}
 }
 
+func TestSameFieldTypeRejectsDistinctNamedTypesWithSamePackageName(t *testing.T) {
+	leftPkg := types.NewPackage("example.com/left/dup", "dup")
+	rightPkg := types.NewPackage("example.com/right/dup", "dup")
+	left := types.NewNamed(types.NewTypeName(0, leftPkg, "Value", nil), types.Typ[types.String], nil)
+	right := types.NewNamed(types.NewTypeName(0, rightPkg, "Value", nil), types.Typ[types.String], nil)
+
+	if sameFieldType(left, right) {
+		t.Fatal("sameFieldType() = true, want false for distinct named types with matching printed names")
+	}
+}
+
 func TestLoadPackageReturnsAllPackageErrors(t *testing.T) {
 	dir := writePackage(t, map[string]string{
 		"go.mod": "module example.com/sample\n\ngo 1.24\n",
@@ -821,15 +783,15 @@ func BrokenTwo(
 
 	_, err := loadPackage(dir)
 	if err == nil {
-		t.Fatal("loadPackage() error = nil, want package errors")
+		t.Fatal("loadPackage() = nil, want package errors")
 	}
 	joined, ok := err.(interface{ Unwrap() []error })
 	if !ok || len(joined.Unwrap()) < 2 {
-		t.Fatalf("loadPackage() error = %T, want joined package errors: %v", err, err)
+		t.Fatalf("loadPackage() = %T, want joined package errors: %v", err, err)
 	}
 	for _, want := range []string{"first.go", "second.go"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("loadPackage() error missing %q: %v", want, err)
+			t.Fatalf("loadPackage() missing %q: %v", want, err)
 		}
 	}
 }
@@ -853,10 +815,10 @@ type State struct {
 
 	_, err := loadPackage(dir)
 	if err == nil {
-		t.Fatal("loadPackage() error = nil, want dependency package errors")
+		t.Fatal("loadPackage() = nil, want dependency package errors")
 	}
 	if !strings.Contains(err.Error(), filepath.Join("dep", "dep.go")) {
-		t.Fatalf("loadPackage() error missing dependency file: %v", err)
+		t.Fatalf("loadPackage() missing dependency file: %v", err)
 	}
 }
 
@@ -879,7 +841,7 @@ type State struct {
 
 	pkg, err := loadPackage(dir)
 	if err != nil {
-		t.Fatalf("loadPackage() error = %v", err)
+		t.Fatalf("loadPackage() = %v", err)
 	}
 	imported := pkg.Imports["example.com/sample/dep"]
 	if imported == nil {
@@ -906,7 +868,7 @@ type FirstVariant struct {
 
 	err := Generate(Config{Dir: dir})
 	if err == nil || !strings.Contains(err.Error(), "no sumtype accessor annotations found") {
-		t.Fatalf("Generate() error = %v, want misspelled annotation to be ignored", err)
+		t.Fatalf("Generate() = %v, want misspelled annotation to be ignored", err)
 	}
 }
 
