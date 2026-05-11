@@ -2,6 +2,7 @@ package generator
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -97,7 +98,8 @@ func Generate(cfg Config) error {
 
 func loadPackage(dir string) (*packages.Package, error) {
 	cfg := &packages.Config{
-		Mode:  packages.NeedName | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo,
+		Mode: packages.NeedName | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo |
+			packages.NeedImports | packages.NeedDeps,
 		Dir:   dir,
 		Tests: false,
 	}
@@ -147,7 +149,7 @@ func collectPackageInfo(pkg *packages.Package, structsByInterface map[string][]s
 	}
 	for interfaceName := range structsByInterface {
 		slices.SortFunc(structsByInterface[interfaceName], func(a, b structInfo) int {
-			return strings.Compare(a.name, b.name)
+			return cmp.Compare(a.name, b.name)
 		})
 	}
 }
@@ -177,8 +179,12 @@ func annotationValue(groups ...*ast.CommentGroup) string {
 			continue
 		}
 		for _, comment := range group.List {
-			text := strings.TrimSpace(strings.TrimPrefix(comment.Text, "//"))
-			if value, ok := strings.CutPrefix(text, annotationPrefix); ok {
+			after, ok := strings.CutPrefix(comment.Text, "//")
+			if !ok {
+				continue
+			}
+			after = strings.TrimSpace(after)
+			if value, ok := strings.CutPrefix(after, annotationPrefix); ok {
 				return strings.TrimSpace(value)
 			}
 		}
@@ -191,8 +197,7 @@ func commonFieldAccessors(interfaceName string, structs []structInfo) ([]fieldAc
 		return nil, fmt.Errorf("%s: no annotated structs found", interfaceName)
 	}
 
-	common := map[string]fieldInfo{}
-	maps.Copy(common, structs[0].fields)
+	common := maps.Clone(structs[0].fields)
 	for _, st := range structs[1:] {
 		for name, field := range common {
 			otherField, ok := st.fields[name]
@@ -307,7 +312,7 @@ func (r typeRenderer) signatureType(sig *types.Signature) jen.Code {
 
 func (r typeRenderer) structType(typ *types.Struct) jen.Code {
 	return jen.StructFunc(func(g *jen.Group) {
-		for i := 0; i < typ.NumFields(); i++ {
+		for i := range typ.NumFields() {
 			field := typ.Field(i)
 			var code *jen.Statement
 			if field.Embedded() {
@@ -335,7 +340,7 @@ func (r typeRenderer) tupleTypes(tup *types.Tuple, variadic bool) []jen.Code {
 		return nil
 	}
 	codes := make([]jen.Code, 0, tup.Len())
-	for i := 0; i < tup.Len(); i++ {
+	for i := range tup.Len() {
 		typ := tup.At(i).Type()
 		if variadic && i == tup.Len()-1 {
 			if slice, ok := typ.(*types.Slice); ok {

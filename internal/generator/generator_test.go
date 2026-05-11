@@ -331,6 +331,36 @@ func BrokenTwo(
 	}
 }
 
+func TestLoadPackageIncludesImportsAndDependencies(t *testing.T) {
+	dir := writePackage(t, map[string]string{
+		"go.mod": "module example.com/sample\n\ngo 1.24\n",
+		"dep/dep.go": `package dep
+
+type Value string
+`,
+		"state.go": `package sample
+
+import "example.com/sample/dep"
+
+type State struct {
+	Value dep.Value
+}
+`,
+	})
+
+	pkg, err := loadPackage(dir)
+	if err != nil {
+		t.Fatalf("loadPackage() error = %v", err)
+	}
+	imported := pkg.Imports["example.com/sample/dep"]
+	if imported == nil {
+		t.Fatalf("loadPackage() imports missing dependency: %#v", pkg.Imports)
+	}
+	if imported.Types == nil || imported.Types.Scope().Lookup("Value") == nil {
+		t.Fatalf("loadPackage() dependency types missing Value: %#v", imported.Types)
+	}
+}
+
 func TestGenerateRejectsMisspelledAnnotation(t *testing.T) {
 	dir := writePackage(t, map[string]string{
 		"go.mod": "module example.com/sample\n\ngo 1.24\n",
