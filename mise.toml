@@ -1,0 +1,5 @@
+[tools]
+golangci-lint = "latest"
+
+[tasks.lint]
+run = 'golangci-lint run'
