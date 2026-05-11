@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/walnuts1018/go-sumtype-getter/internal/generator"
+	"github.com/walnuts1018/go-sumtype-accessor/internal/generator"
 )
 
 func main() {
