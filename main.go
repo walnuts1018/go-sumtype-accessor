@@ -10,7 +10,7 @@ import (
 
 func main() {
 	var cfg generator.Config
-	flag.StringVar(&cfg.Output, "output", "sumtype_accessors.go", "generated file name")
+	flag.StringVar(&cfg.Output, "output", generator.DefaultOutput, "generated file name")
 	flag.StringVar(&cfg.Dir, "dir", ".", "target package directory")
 	flag.Parse()
 

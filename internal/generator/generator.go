@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/parser"
+	"go/printer"
 	"go/token"
 	"go/types"
 	"maps"
@@ -19,7 +21,10 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-const annotationPrefix = "+go-sumtype-accessor="
+const (
+	annotationPrefix = "+go-sumtype-accessor="
+	DefaultOutput    = "sumtype_accessors.go"
+)
 
 type Config struct {
 	Dir    string
@@ -55,15 +60,20 @@ type generationTarget struct {
 	accessors     []fieldAccessor
 }
 
+type interfaceStub struct {
+	name       string
+	typeParams []string
+}
+
 func Generate(cfg Config) error {
 	if cfg.Dir == "" {
 		cfg.Dir = "."
 	}
 	if cfg.Output == "" {
-		cfg.Output = "sumtype_accessors.go"
+		cfg.Output = DefaultOutput
 	}
 
-	pkg, err := loadPackage(cfg.Dir)
+	pkg, err := loadPackage(cfg.Dir, cfg.Output)
 	if err != nil {
 		return err
 	}
@@ -97,12 +107,17 @@ func Generate(cfg Config) error {
 	return os.WriteFile(filepath.Join(cfg.Dir, cfg.Output), content, 0o644)
 }
 
-func loadPackage(dir string) (*packages.Package, error) {
+func loadPackage(dir, output string) (*packages.Package, error) {
+	overlay, err := outputOverlay(dir, output)
+	if err != nil {
+		return nil, err
+	}
 	cfg := &packages.Config{
 		Mode: packages.NeedName | packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo |
 			packages.NeedImports | packages.NeedDeps,
-		Dir:   dir,
-		Tests: false,
+		Dir:     dir,
+		Tests:   false,
+		Overlay: overlay,
 	}
 	pkgs, err := packages.Load(cfg, ".")
 	if err != nil {
@@ -121,6 +136,178 @@ func loadPackage(dir string) (*packages.Package, error) {
 		return nil, errors.Join(errs...)
 	}
 	return pkgs[0], nil
+}
+
+func outputOverlay(dir, output string) (map[string][]byte, error) {
+	if output == "" {
+		return nil, nil
+	}
+	outputPath, err := outputFilePath(dir, output)
+	if err != nil {
+		return nil, err
+	}
+	packageName, stubs, err := packageInterfaceStubs(dir, outputPath)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(outputPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if len(stubs) == 0 {
+				return nil, nil
+			}
+			return map[string][]byte{outputPath: renderInterfaceStubs(packageName, stubs)}, nil
+		}
+		return nil, err
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("output path is a directory: %s", outputPath)
+	}
+	outputPackage, outputStubs, err := generatedInterfaceStubs(outputPath)
+	if err != nil {
+		return nil, err
+	}
+	if packageName == "" {
+		packageName = outputPackage
+	}
+	maps.Copy(stubs, outputStubs)
+	return map[string][]byte{
+		outputPath: renderInterfaceStubs(packageName, stubs),
+	}, nil
+}
+
+func outputFilePath(dir, output string) (string, error) {
+	outputPath := output
+	if !filepath.IsAbs(outputPath) {
+		outputPath = filepath.Join(dir, outputPath)
+	}
+	return filepath.Abs(outputPath)
+}
+
+func packageInterfaceStubs(dir, outputPath string) (string, map[string]interfaceStub, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", nil, err
+	}
+	stubs := map[string]interfaceStub{}
+	definedTypes := map[string]bool{}
+	packageName := ""
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		path, err := filepath.Abs(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return "", nil, err
+		}
+		if path == outputPath {
+			continue
+		}
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+		if err != nil {
+			return "", nil, err
+		}
+		if packageName == "" {
+			packageName = file.Name.Name
+		}
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				definedTypes[ts.Name.Name] = true
+				if _, ok := ts.Type.(*ast.StructType); !ok {
+					continue
+				}
+				interfaceName := annotationValue(ts.Doc, gen.Doc)
+				if interfaceName == "" {
+					continue
+				}
+				if _, ok := stubs[interfaceName]; !ok {
+					stubs[interfaceName] = interfaceStub{name: interfaceName, typeParams: typeParamNames(ts.TypeParams)}
+				}
+			}
+		}
+	}
+	for name := range definedTypes {
+		delete(stubs, name)
+	}
+	return packageName, stubs, nil
+}
+
+func generatedInterfaceStubs(path string) (string, map[string]interfaceStub, error) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		return "", nil, err
+	}
+
+	stubs := map[string]interfaceStub{}
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			if _, ok := ts.Type.(*ast.InterfaceType); !ok {
+				continue
+			}
+			stubs[ts.Name.Name] = interfaceStub{name: ts.Name.Name, typeParams: typeParamNames(ts.TypeParams)}
+		}
+	}
+	return file.Name.Name, stubs, nil
+}
+
+func renderInterfaceStubs(packageName string, stubs map[string]interfaceStub) []byte {
+	var b bytes.Buffer
+	fmt.Fprintf(&b, "package %s\n\n", packageName)
+	for _, name := range slices.Sorted(maps.Keys(stubs)) {
+		stub := stubs[name]
+		fmt.Fprintf(&b, "type %s", stub.name)
+		writeAnyTypeParams(&b, stub.typeParams)
+		b.WriteString(" interface{}\n\n")
+	}
+	return b.Bytes()
+}
+
+func typeParamNames(params *ast.FieldList) []string {
+	if params == nil || params.NumFields() == 0 {
+		return nil
+	}
+	names := make([]string, 0, params.NumFields())
+	for _, field := range params.List {
+		for _, name := range field.Names {
+			var b bytes.Buffer
+			_ = printer.Fprint(&b, token.NewFileSet(), name)
+			names = append(names, b.String())
+		}
+	}
+	return names
+}
+
+func writeAnyTypeParams(b *bytes.Buffer, params []string) {
+	if len(params) == 0 {
+		return
+	}
+	b.WriteByte('[')
+	for i, name := range params {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(name)
+		b.WriteString(" any")
+	}
+	b.WriteByte(']')
 }
 
 func collectPackageInfo(pkg *packages.Package, structsByInterface map[string][]structInfo) {
@@ -259,6 +446,7 @@ type typePair struct {
 	b types.Type
 }
 
+//nolint:gocyclo // This intentionally mirrors the go/types Type implementations.
 func sameFieldTypeSeen(a, b types.Type, seen map[typePair]bool) bool {
 	if types.Identical(a, b) {
 		return true
