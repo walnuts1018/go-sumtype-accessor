@@ -785,8 +785,14 @@ func (C1) isCType() {}
 
 // +go-sumtype-accessor:generic-facets=Hoge
 type HogeImpl[S A, T B, U C] struct {
-	ID    string
-	Value S
+	ID       string
+	Value    S
+	Items    []S
+	Other    T
+	Combined []struct {
+		Left  S
+		Right T
+	}
 }
 
 func NeedA1(value Hoge) {
@@ -810,11 +816,17 @@ type Hoge interface {
 type HogeWithA[S A] interface {
 	Hoge
 	isA(S)
+	GetItems() []S
+	SetItems([]S)
+	GetValue() S
+	SetValue(S)
 }
 
 type HogeWithB[T B] interface {
 	Hoge
 	isB(T)
+	GetOther() T
+	SetOther(T)
 }
 
 type HogeWithC[U C] interface {
@@ -834,7 +846,31 @@ func (v *HogeImpl[S, T, U]) SetID(value string) {
 
 func (*HogeImpl[S, T, U]) isA(S) {}
 
+func (v *HogeImpl[S, T, U]) GetItems() []S {
+	return v.Items
+}
+
+func (v *HogeImpl[S, T, U]) SetItems(value []S) {
+	v.Items = value
+}
+
+func (v *HogeImpl[S, T, U]) GetValue() S {
+	return v.Value
+}
+
+func (v *HogeImpl[S, T, U]) SetValue(value S) {
+	v.Value = value
+}
+
 func (*HogeImpl[S, T, U]) isB(T) {}
+
+func (v *HogeImpl[S, T, U]) GetOther() T {
+	return v.Other
+}
+
+func (v *HogeImpl[S, T, U]) SetOther(value T) {
+	v.Other = value
+}
 
 func (*HogeImpl[S, T, U]) isC(U) {}
 `,

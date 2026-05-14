@@ -75,6 +75,7 @@ type typeParamFacet struct {
 	interfaceName string
 	typeParam     typeParamInfo
 	method        string
+	accessors     []fieldAccessor
 }
 
 type interfaceStub struct {
@@ -511,6 +512,7 @@ func newTypeParamTarget(interfaceName string, structs []structInfo) (typeParamTa
 			interfaceName: interfaceName + "With" + suffix,
 			typeParam:     param,
 			method:        "is" + suffix,
+			accessors:     typeParamFieldAccessors(st, param.name),
 		})
 	}
 	return typeParamTarget{
@@ -542,13 +544,25 @@ func typeParamFacetSuffixFromType(typ types.Type) string {
 }
 
 func nonTypeParamFieldAccessors(st structInfo) []fieldAccessor {
+	return fieldAccessorsByTypeParamUse(st, func(used map[string]bool) bool {
+		return len(used) == 0
+	})
+}
+
+func typeParamFieldAccessors(st structInfo, paramName string) []fieldAccessor {
+	return fieldAccessorsByTypeParamUse(st, func(used map[string]bool) bool {
+		return len(used) == 1 && used[paramName]
+	})
+}
+
+func fieldAccessorsByTypeParamUse(st structInfo, include func(map[string]bool) bool) []fieldAccessor {
 	names := slices.Sorted(maps.Keys(st.fields))
 	accessors := make([]fieldAccessor, 0, len(names))
 	for _, fieldName := range names {
 		fieldType := st.fields[fieldName].typ
 		used := map[string]bool{}
 		collectTypeParamNames(fieldType, used, map[types.Type]bool{})
-		if len(used) > 0 {
+		if !include(used) {
 			continue
 		}
 		accessors = append(accessors, fieldAccessor{
@@ -825,6 +839,10 @@ func render(packageName, packagePath string, targets []generationTarget, typePar
 			).InterfaceFunc(func(g *jen.Group) {
 				g.Id(target.interfaceName)
 				g.Id(facet.method).Params(jen.Id(facet.typeParam.name))
+				for _, accessor := range facet.accessors {
+					g.Id(accessor.getter).Params().Add(typeRenderer.code(accessor.fieldType))
+					g.Id(accessor.setter).Params(typeRenderer.code(accessor.fieldType))
+				}
 			})
 			f.Line()
 		}
@@ -845,6 +863,17 @@ func render(packageName, packagePath string, targets []generationTarget, typePar
 		for _, facet := range target.facets {
 			f.Func().Params(typeRenderer.receiverType(target.st)).Id(facet.method).Params(jen.Id(facet.typeParam.name)).Block()
 			f.Line()
+			for _, accessor := range facet.accessors {
+				fieldType := typeRenderer.code(accessor.fieldType)
+				f.Func().Params(jen.Id("v").Add(typeRenderer.receiverType(target.st))).Id(accessor.getter).Params().Add(fieldType).Block(
+					jen.Return(jen.Id("v").Dot(accessor.fieldName)),
+				)
+				f.Line()
+				f.Func().Params(jen.Id("v").Add(typeRenderer.receiverType(target.st))).Id(accessor.setter).Params(jen.Id("value").Add(fieldType)).Block(
+					jen.Id("v").Dot(accessor.fieldName).Op("=").Id("value"),
+				)
+				f.Line()
+			}
 		}
 	}
 
