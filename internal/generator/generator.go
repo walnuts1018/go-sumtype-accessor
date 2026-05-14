@@ -23,9 +23,10 @@ import (
 )
 
 const (
-	annotationPrefix = "+go-sumtype-accessor="
-	ignoreTagKey     = "sumtype"
-	DefaultOutput    = "sumtype_accessors.go"
+	annotationPrefix          = "+go-sumtype-accessor="
+	typeParamAnnotationPrefix = "+go-sumtype-accessor:generic-facets="
+	ignoreTagKey              = "sumtype"
+	DefaultOutput             = "sumtype_accessors.go"
 )
 
 type Config struct {
@@ -62,6 +63,20 @@ type generationTarget struct {
 	accessors     []fieldAccessor
 }
 
+type typeParamTarget struct {
+	interfaceName string
+	marker        string
+	st            structInfo
+	accessors     []fieldAccessor
+	facets        []typeParamFacet
+}
+
+type typeParamFacet struct {
+	interfaceName string
+	typeParam     typeParamInfo
+	method        string
+}
+
 type interfaceStub struct {
 	name       string
 	typeParams []string
@@ -81,8 +96,9 @@ func Generate(cfg Config) error {
 	}
 
 	structsByInterface := map[string][]structInfo{}
-	collectPackageInfo(pkg, structsByInterface)
-	if len(structsByInterface) == 0 {
+	typeParamStructsByInterface := map[string][]structInfo{}
+	collectPackageInfo(pkg, structsByInterface, typeParamStructsByInterface)
+	if len(structsByInterface) == 0 && len(typeParamStructsByInterface) == 0 {
 		return errors.New("no sumtype accessor annotations found")
 	}
 
@@ -102,7 +118,18 @@ func Generate(cfg Config) error {
 		})
 	}
 
-	content, err := render(pkg.Name, pkg.PkgPath, targets)
+	typeParamInterfaceNames := slices.Sorted(maps.Keys(typeParamStructsByInterface))
+	typeParamTargets := make([]typeParamTarget, 0, len(typeParamInterfaceNames))
+	for _, interfaceName := range typeParamInterfaceNames {
+		structs := typeParamStructsByInterface[interfaceName]
+		target, err := newTypeParamTarget(interfaceName, structs)
+		if err != nil {
+			return err
+		}
+		typeParamTargets = append(typeParamTargets, target)
+	}
+
+	content, err := render(pkg.Name, pkg.PkgPath, targets, typeParamTargets)
 	if err != nil {
 		return err
 	}
@@ -227,12 +254,20 @@ func packageInterfaceStubs(dir, outputPath string) (string, map[string]interface
 				if _, ok := ts.Type.(*ast.StructType); !ok {
 					continue
 				}
-				interfaceName := annotationValue(ts.Doc, gen.Doc)
-				if interfaceName == "" {
-					continue
+				if interfaceName := annotationValue(annotationPrefix, ts.Doc, gen.Doc); interfaceName != "" {
+					if _, ok := stubs[interfaceName]; !ok {
+						stubs[interfaceName] = interfaceStub{name: interfaceName, typeParams: typeParamNames(ts.TypeParams)}
+					}
 				}
-				if _, ok := stubs[interfaceName]; !ok {
-					stubs[interfaceName] = interfaceStub{name: interfaceName, typeParams: typeParamNames(ts.TypeParams)}
+				if interfaceName := annotationValue(typeParamAnnotationPrefix, ts.Doc, gen.Doc); interfaceName != "" {
+					if _, ok := stubs[interfaceName]; !ok {
+						stubs[interfaceName] = interfaceStub{name: interfaceName}
+					}
+					for _, stub := range typeParamFacetStubs(interfaceName, ts.TypeParams) {
+						if _, ok := stubs[stub.name]; !ok {
+							stubs[stub.name] = stub
+						}
+					}
 				}
 			}
 		}
@@ -297,6 +332,49 @@ func typeParamNames(params *ast.FieldList) []string {
 	return names
 }
 
+func typeParamFacetStubs(interfaceName string, params *ast.FieldList) []interfaceStub {
+	if params == nil || params.NumFields() == 0 {
+		return nil
+	}
+	var stubs []interfaceStub
+	for _, field := range params.List {
+		for _, name := range field.Names {
+			paramName := name.Name
+			suffix := typeParamFacetSuffix(field.Type)
+			if suffix == "" {
+				suffix = paramName
+			}
+			stubs = append(stubs, interfaceStub{
+				name:       interfaceName + "With" + suffix,
+				typeParams: []string{paramName},
+			})
+		}
+	}
+	return stubs
+}
+
+func typeParamFacetSuffix(expr ast.Expr) string {
+	switch expr := expr.(type) {
+	case *ast.Ident:
+		if !expr.IsExported() {
+			return ""
+		}
+		return expr.Name
+	case *ast.SelectorExpr:
+		return expr.Sel.Name
+	case *ast.IndexExpr:
+		return typeParamFacetSuffix(expr.X)
+	case *ast.IndexListExpr:
+		return typeParamFacetSuffix(expr.X)
+	case *ast.StarExpr:
+		return typeParamFacetSuffix(expr.X)
+	case *ast.UnaryExpr:
+		return typeParamFacetSuffix(expr.X)
+	default:
+		return ""
+	}
+}
+
 func writeAnyTypeParams(b *bytes.Buffer, params []string) {
 	if len(params) == 0 {
 		return
@@ -312,7 +390,7 @@ func writeAnyTypeParams(b *bytes.Buffer, params []string) {
 	b.WriteByte(']')
 }
 
-func collectPackageInfo(pkg *packages.Package, structsByInterface map[string][]structInfo) {
+func collectPackageInfo(pkg *packages.Package, structsByInterface, typeParamStructsByInterface map[string][]structInfo) {
 	for _, file := range pkg.Syntax {
 		for _, decl := range file.Decls {
 			gen, ok := decl.(*ast.GenDecl)
@@ -327,8 +405,9 @@ func collectPackageInfo(pkg *packages.Package, structsByInterface map[string][]s
 				if _, ok := ts.Type.(*ast.StructType); !ok {
 					continue
 				}
-				interfaceName := annotationValue(ts.Doc, gen.Doc)
-				if interfaceName == "" {
+				interfaceName := annotationValue(annotationPrefix, ts.Doc, gen.Doc)
+				typeParamInterfaceName := annotationValue(typeParamAnnotationPrefix, ts.Doc, gen.Doc)
+				if interfaceName == "" && typeParamInterfaceName == "" {
 					continue
 				}
 				obj := pkg.TypesInfo.Defs[ts.Name]
@@ -343,16 +422,27 @@ func collectPackageInfo(pkg *packages.Package, structsByInterface map[string][]s
 				if !ok {
 					continue
 				}
-				structsByInterface[interfaceName] = append(structsByInterface[interfaceName], structInfo{
+				st := structInfo{
 					name:       ts.Name.Name,
 					typeParams: typeParams(named),
 					fields:     structFields(stType),
-				})
+				}
+				if interfaceName != "" {
+					structsByInterface[interfaceName] = append(structsByInterface[interfaceName], st)
+				}
+				if typeParamInterfaceName != "" {
+					typeParamStructsByInterface[typeParamInterfaceName] = append(typeParamStructsByInterface[typeParamInterfaceName], st)
+				}
 			}
 		}
 	}
 	for interfaceName := range structsByInterface {
 		slices.SortFunc(structsByInterface[interfaceName], func(a, b structInfo) int {
+			return cmp.Compare(a.name, b.name)
+		})
+	}
+	for interfaceName := range typeParamStructsByInterface {
+		slices.SortFunc(typeParamStructsByInterface[interfaceName], func(a, b structInfo) int {
 			return cmp.Compare(a.name, b.name)
 		})
 	}
@@ -388,19 +478,87 @@ func structFields(st *types.Struct) map[string]fieldInfo {
 	return fields
 }
 
-func annotationValue(groups ...*ast.CommentGroup) string {
+func annotationValue(prefix string, groups ...*ast.CommentGroup) string {
 	for _, group := range groups {
 		if group == nil {
 			continue
 		}
 		for line := range strings.SplitSeq(group.Text(), "\n") {
 			line = strings.TrimSpace(line)
-			if value, ok := strings.CutPrefix(line, annotationPrefix); ok {
+			if value, ok := strings.CutPrefix(line, prefix); ok {
 				return strings.TrimSpace(value)
 			}
 		}
 	}
 	return ""
+}
+
+func newTypeParamTarget(interfaceName string, structs []structInfo) (typeParamTarget, error) {
+	if len(structs) == 0 {
+		return typeParamTarget{}, fmt.Errorf("%s: no annotated structs found", interfaceName)
+	}
+	if len(structs) > 1 {
+		return typeParamTarget{}, fmt.Errorf("%s: type parameter accessor annotation must be used on exactly one struct", interfaceName)
+	}
+	st := structs[0]
+	facets := make([]typeParamFacet, 0, len(st.typeParams))
+	for _, param := range st.typeParams {
+		suffix := typeParamFacetSuffixFromType(param.constraint)
+		if suffix == "" {
+			suffix = param.name
+		}
+		facets = append(facets, typeParamFacet{
+			interfaceName: interfaceName + "With" + suffix,
+			typeParam:     param,
+			method:        "is" + suffix,
+		})
+	}
+	return typeParamTarget{
+		interfaceName: interfaceName,
+		marker:        markerMethodName(interfaceName),
+		st:            st,
+		accessors:     nonTypeParamFieldAccessors(st),
+		facets:        facets,
+	}, nil
+}
+
+func typeParamFacetSuffixFromType(typ types.Type) string {
+	switch typ := typ.(type) {
+	case *types.Alias:
+		if typ.Obj().Pkg() == nil {
+			return ""
+		}
+		return typ.Obj().Name()
+	case *types.Named:
+		if typ.Obj().Pkg() == nil {
+			return ""
+		}
+		return typ.Obj().Name()
+	case *types.Pointer:
+		return typeParamFacetSuffixFromType(typ.Elem())
+	default:
+		return ""
+	}
+}
+
+func nonTypeParamFieldAccessors(st structInfo) []fieldAccessor {
+	names := slices.Sorted(maps.Keys(st.fields))
+	accessors := make([]fieldAccessor, 0, len(names))
+	for _, fieldName := range names {
+		fieldType := st.fields[fieldName].typ
+		used := map[string]bool{}
+		collectTypeParamNames(fieldType, used, map[types.Type]bool{})
+		if len(used) > 0 {
+			continue
+		}
+		accessors = append(accessors, fieldAccessor{
+			fieldName: fieldName,
+			fieldType: fieldType,
+			getter:    "Get" + fieldName,
+			setter:    "Set" + fieldName,
+		})
+	}
+	return accessors
 }
 
 func commonFieldAccessors(interfaceName string, structs []structInfo) ([]fieldAccessor, error) {
@@ -616,7 +774,7 @@ func sameUnionType(a, b *types.Union, seen map[typePair]bool) bool {
 	return true
 }
 
-func render(packageName, packagePath string, targets []generationTarget) ([]byte, error) {
+func render(packageName, packagePath string, targets []generationTarget, typeParamTargets []typeParamTarget) ([]byte, error) {
 	f := jen.NewFilePathName(packagePath, packageName)
 	f.HeaderComment("Code generated by go-sumtype-accessor. DO NOT EDIT.")
 
@@ -649,6 +807,44 @@ func render(packageName, packagePath string, targets []generationTarget) ([]byte
 				)
 				f.Line()
 			}
+		}
+	}
+	for _, target := range typeParamTargets {
+		f.Type().Id(target.interfaceName).InterfaceFunc(func(g *jen.Group) {
+			g.Id(target.marker).Params()
+			for _, accessor := range target.accessors {
+				g.Id(accessor.getter).Params().Add(typeRenderer.code(accessor.fieldType))
+				g.Id(accessor.setter).Params(typeRenderer.code(accessor.fieldType))
+			}
+		})
+		f.Line()
+
+		for _, facet := range target.facets {
+			f.Type().Id(facet.interfaceName).Types(
+				jen.Id(facet.typeParam.name).Add(typeRenderer.code(facet.typeParam.constraint)),
+			).InterfaceFunc(func(g *jen.Group) {
+				g.Id(target.interfaceName)
+				g.Id(facet.method).Params(jen.Id(facet.typeParam.name))
+			})
+			f.Line()
+		}
+
+		f.Func().Params(typeRenderer.receiverType(target.st)).Id(target.marker).Params().Block()
+		f.Line()
+		for _, accessor := range target.accessors {
+			fieldType := typeRenderer.code(accessor.fieldType)
+			f.Func().Params(jen.Id("v").Add(typeRenderer.receiverType(target.st))).Id(accessor.getter).Params().Add(fieldType).Block(
+				jen.Return(jen.Id("v").Dot(accessor.fieldName)),
+			)
+			f.Line()
+			f.Func().Params(jen.Id("v").Add(typeRenderer.receiverType(target.st))).Id(accessor.setter).Params(jen.Id("value").Add(fieldType)).Block(
+				jen.Id("v").Dot(accessor.fieldName).Op("=").Id("value"),
+			)
+			f.Line()
+		}
+		for _, facet := range target.facets {
+			f.Func().Params(typeRenderer.receiverType(target.st)).Id(facet.method).Params(jen.Id(facet.typeParam.name)).Block()
+			f.Line()
 		}
 	}
 
