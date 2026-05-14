@@ -623,7 +623,7 @@ func render(packageName, packagePath string, targets []generationTarget) ([]byte
 	typeRenderer := typeRenderer{}
 	for _, target := range targets {
 		interfaceType := f.Type().Id(target.interfaceName)
-		if typeParamDecls := typeRenderer.typeParamDecls(target.structs[0].typeParams); len(typeParamDecls) > 0 {
+		if typeParamDecls := typeRenderer.typeParamDecls(interfaceTypeParams(target)); len(typeParamDecls) > 0 {
 			interfaceType.Types(typeParamDecls...)
 		}
 		interfaceType.InterfaceFunc(func(g *jen.Group) {
@@ -657,6 +657,103 @@ func render(packageName, packagePath string, targets []generationTarget) ([]byte
 		return nil, err
 	}
 	return b.Bytes(), nil
+}
+
+func interfaceTypeParams(target generationTarget) []typeParamInfo {
+	used := map[string]bool{}
+	for _, accessor := range target.accessors {
+		collectTypeParamNames(accessor.fieldType, used, map[types.Type]bool{})
+	}
+	if len(used) == 0 {
+		return nil
+	}
+
+	params := target.structs[0].typeParams
+	for changed := true; changed; {
+		changed = false
+		for _, param := range params {
+			if !used[param.name] {
+				continue
+			}
+			before := len(used)
+			collectTypeParamNames(param.constraint, used, map[types.Type]bool{})
+			if len(used) != before {
+				changed = true
+			}
+		}
+	}
+
+	filtered := make([]typeParamInfo, 0, len(params))
+	for _, param := range params {
+		if used[param.name] {
+			filtered = append(filtered, param)
+		}
+	}
+	return filtered
+}
+
+func collectTypeParamNames(typ types.Type, names map[string]bool, seen map[types.Type]bool) {
+	if typ == nil || seen[typ] {
+		return
+	}
+	seen[typ] = true
+
+	switch typ := typ.(type) {
+	case *types.Alias:
+		collectTypeParamNamesFromTypeList(typ.TypeArgs(), names, seen)
+	case *types.Array:
+		collectTypeParamNames(typ.Elem(), names, seen)
+	case *types.Basic:
+	case *types.Chan:
+		collectTypeParamNames(typ.Elem(), names, seen)
+	case *types.Map:
+		collectTypeParamNames(typ.Key(), names, seen)
+		collectTypeParamNames(typ.Elem(), names, seen)
+	case *types.Interface:
+		for etyp := range typ.EmbeddedTypes() {
+			collectTypeParamNames(etyp, names, seen)
+		}
+		for method := range typ.ExplicitMethods() {
+			collectTypeParamNames(method.Type(), names, seen)
+		}
+	case *types.Named:
+		collectTypeParamNamesFromTypeList(typ.TypeArgs(), names, seen)
+	case *types.Pointer:
+		collectTypeParamNames(typ.Elem(), names, seen)
+	case *types.Signature:
+		collectTypeParamNamesFromTuple(typ.Params(), names, seen)
+		collectTypeParamNamesFromTuple(typ.Results(), names, seen)
+	case *types.Slice:
+		collectTypeParamNames(typ.Elem(), names, seen)
+	case *types.Struct:
+		for i := range typ.NumFields() {
+			collectTypeParamNames(typ.Field(i).Type(), names, seen)
+		}
+	case *types.TypeParam:
+		names[typ.Obj().Name()] = true
+	case *types.Union:
+		for i := range typ.Len() {
+			collectTypeParamNames(typ.Term(i).Type(), names, seen)
+		}
+	}
+}
+
+func collectTypeParamNamesFromTypeList(typesList *types.TypeList, names map[string]bool, seen map[types.Type]bool) {
+	if typesList == nil {
+		return
+	}
+	for typ := range typesList.Types() {
+		collectTypeParamNames(typ, names, seen)
+	}
+}
+
+func collectTypeParamNamesFromTuple(tuple *types.Tuple, names map[string]bool, seen map[types.Type]bool) {
+	if tuple == nil {
+		return
+	}
+	for i := range tuple.Len() {
+		collectTypeParamNames(tuple.At(i).Type(), names, seen)
+	}
 }
 
 func markerMethodName(interfaceName string) string {
