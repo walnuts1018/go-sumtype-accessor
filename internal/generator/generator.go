@@ -13,6 +13,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ import (
 
 const (
 	annotationPrefix = "+go-sumtype-accessor="
+	ignoreTagKey     = "sumtype"
 	DefaultOutput    = "sumtype_accessors.go"
 )
 
@@ -373,8 +375,12 @@ func typeParams(named *types.Named) []typeParamInfo {
 
 func structFields(st *types.Struct) map[string]fieldInfo {
 	fields := make(map[string]fieldInfo, st.NumFields())
-	for field := range st.Fields() {
+	for i := range st.NumFields() {
+		field := st.Field(i)
 		if !field.Exported() {
+			continue
+		}
+		if reflect.StructTag(st.Tag(i)).Get(ignoreTagKey) == "-" {
 			continue
 		}
 		fields[field.Name()] = fieldInfo{typ: field.Type()}
