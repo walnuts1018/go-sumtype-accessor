@@ -796,10 +796,10 @@ type HogeImpl[S A, T B, U C] struct {
 }
 
 func NeedA1(value Hoge) {
-	_, _ = value.(HogeWithA[A1])
+	_, _ = value.(HogeWithS[A1])
 }
 
-func AcceptAnyBC(value HogeWithA[A1]) {}
+func AcceptAnyBC(value HogeWithS[A1]) {}
 `,
 			},
 			output: DefaultOutput,
@@ -813,25 +813,25 @@ type Hoge interface {
 	SetID(string)
 }
 
-type HogeWithA[S A] interface {
+type HogeWithS[S A] interface {
 	Hoge
-	isA(S)
+	isS(S)
 	GetItems() []S
 	SetItems([]S)
 	GetValue() S
 	SetValue(S)
 }
 
-type HogeWithB[T B] interface {
+type HogeWithT[T B] interface {
 	Hoge
-	isB(T)
+	isT(T)
 	GetOther() T
 	SetOther(T)
 }
 
-type HogeWithC[U C] interface {
+type HogeWithU[U C] interface {
 	Hoge
-	isC(U)
+	isU(U)
 }
 
 func (*HogeImpl[S, T, U]) isHoge() {}
@@ -844,7 +844,7 @@ func (v *HogeImpl[S, T, U]) SetID(value string) {
 	v.ID = value
 }
 
-func (*HogeImpl[S, T, U]) isA(S) {}
+func (*HogeImpl[S, T, U]) isS(S) {}
 
 func (v *HogeImpl[S, T, U]) GetItems() []S {
 	return v.Items
@@ -862,7 +862,7 @@ func (v *HogeImpl[S, T, U]) SetValue(value S) {
 	v.Value = value
 }
 
-func (*HogeImpl[S, T, U]) isB(T) {}
+func (*HogeImpl[S, T, U]) isT(T) {}
 
 func (v *HogeImpl[S, T, U]) GetOther() T {
 	return v.Other
@@ -872,7 +872,7 @@ func (v *HogeImpl[S, T, U]) SetOther(value T) {
 	v.Other = value
 }
 
-func (*HogeImpl[S, T, U]) isC(U) {}
+func (*HogeImpl[S, T, U]) isU(U) {}
 `,
 			checkCompiles: true,
 		},

@@ -341,39 +341,13 @@ func typeParamFacetStubs(interfaceName string, params *ast.FieldList) []interfac
 	for _, field := range params.List {
 		for _, name := range field.Names {
 			paramName := name.Name
-			suffix := typeParamFacetSuffix(field.Type)
-			if suffix == "" {
-				suffix = paramName
-			}
 			stubs = append(stubs, interfaceStub{
-				name:       interfaceName + "With" + suffix,
+				name:       interfaceName + "With" + paramName,
 				typeParams: []string{paramName},
 			})
 		}
 	}
 	return stubs
-}
-
-func typeParamFacetSuffix(expr ast.Expr) string {
-	switch expr := expr.(type) {
-	case *ast.Ident:
-		if !expr.IsExported() {
-			return ""
-		}
-		return expr.Name
-	case *ast.SelectorExpr:
-		return expr.Sel.Name
-	case *ast.IndexExpr:
-		return typeParamFacetSuffix(expr.X)
-	case *ast.IndexListExpr:
-		return typeParamFacetSuffix(expr.X)
-	case *ast.StarExpr:
-		return typeParamFacetSuffix(expr.X)
-	case *ast.UnaryExpr:
-		return typeParamFacetSuffix(expr.X)
-	default:
-		return ""
-	}
 }
 
 func writeAnyTypeParams(b *bytes.Buffer, params []string) {
@@ -504,14 +478,10 @@ func newTypeParamTarget(interfaceName string, structs []structInfo) (typeParamTa
 	st := structs[0]
 	facets := make([]typeParamFacet, 0, len(st.typeParams))
 	for _, param := range st.typeParams {
-		suffix := typeParamFacetSuffixFromType(param.constraint)
-		if suffix == "" {
-			suffix = param.name
-		}
 		facets = append(facets, typeParamFacet{
-			interfaceName: interfaceName + "With" + suffix,
+			interfaceName: interfaceName + "With" + param.name,
 			typeParam:     param,
-			method:        "is" + suffix,
+			method:        "is" + param.name,
 			accessors:     typeParamFieldAccessors(st, param.name),
 		})
 	}
@@ -522,25 +492,6 @@ func newTypeParamTarget(interfaceName string, structs []structInfo) (typeParamTa
 		accessors:     nonTypeParamFieldAccessors(st),
 		facets:        facets,
 	}, nil
-}
-
-func typeParamFacetSuffixFromType(typ types.Type) string {
-	switch typ := typ.(type) {
-	case *types.Alias:
-		if typ.Obj().Pkg() == nil {
-			return ""
-		}
-		return typ.Obj().Name()
-	case *types.Named:
-		if typ.Obj().Pkg() == nil {
-			return ""
-		}
-		return typ.Obj().Name()
-	case *types.Pointer:
-		return typeParamFacetSuffixFromType(typ.Elem())
-	default:
-		return ""
-	}
 }
 
 func nonTypeParamFieldAccessors(st structInfo) []fieldAccessor {
