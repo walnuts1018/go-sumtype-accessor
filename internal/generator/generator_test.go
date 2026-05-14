@@ -797,6 +797,7 @@ type HogeImpl[S A, T B, U C] struct {
 
 func NeedA1(value Hoge) {
 	_, _ = value.(HogeWithS[A1])
+	_, _ = value.(HogeWithSAndT[A1, B1])
 }
 
 func AcceptAnyBC(value HogeWithS[A1]) {}
@@ -832,6 +833,27 @@ type HogeWithT[T B] interface {
 type HogeWithU[U C] interface {
 	Hoge
 	isU(U)
+}
+
+type HogeWithSAndT[S A, T B] interface {
+	HogeWithS[S]
+	HogeWithT[T]
+}
+
+type HogeWithSAndU[S A, U C] interface {
+	HogeWithS[S]
+	HogeWithU[U]
+}
+
+type HogeWithTAndU[T B, U C] interface {
+	HogeWithT[T]
+	HogeWithU[U]
+}
+
+type HogeWithSAndTAndU[S A, T B, U C] interface {
+	HogeWithS[S]
+	HogeWithT[T]
+	HogeWithU[U]
 }
 
 func (*HogeImpl[S, T, U]) isHoge() {}

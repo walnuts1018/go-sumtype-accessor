@@ -69,6 +69,7 @@ type typeParamTarget struct {
 	st            structInfo
 	accessors     []fieldAccessor
 	facets        []typeParamFacet
+	combinations  []typeParamFacetCombination
 }
 
 type typeParamFacet struct {
@@ -76,6 +77,11 @@ type typeParamFacet struct {
 	typeParam     typeParamInfo
 	method        string
 	accessors     []fieldAccessor
+}
+
+type typeParamFacetCombination struct {
+	interfaceName string
+	facets        []typeParamFacet
 }
 
 type interfaceStub struct {
@@ -337,17 +343,78 @@ func typeParamFacetStubs(interfaceName string, params *ast.FieldList) []interfac
 	if params == nil || params.NumFields() == 0 {
 		return nil
 	}
-	var stubs []interfaceStub
+	var names []string
 	for _, field := range params.List {
 		for _, name := range field.Names {
-			paramName := name.Name
-			stubs = append(stubs, interfaceStub{
-				name:       interfaceName + "With" + paramName,
-				typeParams: []string{paramName},
-			})
+			names = append(names, name.Name)
 		}
 	}
+	stubs := make([]interfaceStub, 0, len(names))
+	for _, name := range names {
+		stubs = append(stubs, interfaceStub{
+			name:       interfaceName + "With" + name,
+			typeParams: []string{name},
+		})
+	}
+	for _, combination := range typeParamNameCombinations(names) {
+		stubs = append(stubs, interfaceStub{
+			name:       typeParamCombinationInterfaceName(interfaceName, combination),
+			typeParams: combination,
+		})
+	}
 	return stubs
+}
+
+func typeParamNameCombinations(names []string) [][]string {
+	var combinations [][]string
+	for mask := 1; mask < 1<<len(names); mask++ {
+		if selectedBitCount(mask) < 2 {
+			continue
+		}
+		combination := make([]string, 0, len(names))
+		for i, name := range names {
+			if mask&(1<<i) != 0 {
+				combination = append(combination, name)
+			}
+		}
+		combinations = append(combinations, combination)
+	}
+	return combinations
+}
+
+func selectedBitCount(mask int) int {
+	count := 0
+	for mask > 0 {
+		count += mask & 1
+		mask >>= 1
+	}
+	return count
+}
+
+func typeParamCombinationInterfaceName(interfaceName string, names []string) string {
+	return interfaceName + "With" + strings.Join(names, "And")
+}
+
+func typeParamFacetCombinations(interfaceName string, facets []typeParamFacet) []typeParamFacetCombination {
+	var combinations []typeParamFacetCombination
+	for mask := 1; mask < 1<<len(facets); mask++ {
+		if selectedBitCount(mask) < 2 {
+			continue
+		}
+		combination := make([]typeParamFacet, 0, len(facets))
+		names := make([]string, 0, len(facets))
+		for i, facet := range facets {
+			if mask&(1<<i) != 0 {
+				combination = append(combination, facet)
+				names = append(names, facet.typeParam.name)
+			}
+		}
+		combinations = append(combinations, typeParamFacetCombination{
+			interfaceName: typeParamCombinationInterfaceName(interfaceName, names),
+			facets:        combination,
+		})
+	}
+	return combinations
 }
 
 func writeAnyTypeParams(b *bytes.Buffer, params []string) {
@@ -491,6 +558,7 @@ func newTypeParamTarget(interfaceName string, structs []structInfo) (typeParamTa
 		st:            st,
 		accessors:     nonTypeParamFieldAccessors(st),
 		facets:        facets,
+		combinations:  typeParamFacetCombinations(interfaceName, facets),
 	}, nil
 }
 
@@ -793,6 +861,18 @@ func render(packageName, packagePath string, targets []generationTarget, typePar
 				for _, accessor := range facet.accessors {
 					g.Id(accessor.getter).Params().Add(typeRenderer.code(accessor.fieldType))
 					g.Id(accessor.setter).Params(typeRenderer.code(accessor.fieldType))
+				}
+			})
+			f.Line()
+		}
+		for _, combination := range target.combinations {
+			typeParamDecls := make([]jen.Code, 0, len(combination.facets))
+			for _, facet := range combination.facets {
+				typeParamDecls = append(typeParamDecls, jen.Id(facet.typeParam.name).Add(typeRenderer.code(facet.typeParam.constraint)))
+			}
+			f.Type().Id(combination.interfaceName).Types(typeParamDecls...).InterfaceFunc(func(g *jen.Group) {
+				for _, facet := range combination.facets {
+					g.Id(facet.interfaceName).Types(jen.Id(facet.typeParam.name))
 				}
 			})
 			f.Line()
